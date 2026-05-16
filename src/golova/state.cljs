@@ -530,24 +530,41 @@ ancestor(X, Z) :- parent(X, Y), ancestor(Y, Z).
   "Run a Pabu-style query body against the current domain's store.
   Returns {:rows [[...]] :vars [v1 v2 ...]} or {:error msg}.
 
-  Naga's pabu doesn't expose a query-parsing API directly, so the body is
-  parsed as a one-line rule whose head returns the variables, evaluated
-  by resolving each body pattern through the store and intersecting on
-  shared variable bindings. Good enough for the simple cases the UI uses."
+  Wraps the body in a synthetic Pabu rule whose head holds the query vars,
+  resolves each body pattern through the store, and intersects bindings on
+  shared variables. Good enough for the cases the UI uses.
+
+  Note: the synthetic head predicate is `qresult` (a plain atom). Pabu
+  treats leading-underscore identifiers as Prolog don't-care variables, so
+  `_q(...)` does *not* parse as a rule head."
   [domain-id body-text]
   (try
-    (let [t (str "_q(" (str/join ", " (or (some->> body-text
-                                                   (re-seq #"\?[a-zA-Z][a-zA-Z0-9_]*")
-                                                   distinct
-                                                   sort)
-                                          ["1"])) ")"
-                 " :- " body-text ".")
+    (let [vars (or (some->> body-text
+                            (re-seq #"\?[a-zA-Z][a-zA-Z0-9_]*")
+                            distinct
+                            sort)
+                   ["?_x"])
+          ;; arity-1 head means [?v :rdf/type :qresult] which gives only one
+          ;; ?v binding; for queries with multiple vars we need arity ≥ 2.
+          ;; Pabu only handles arity 0,1,2 — for n > 2 just project the first
+          ;; two; we rebuild full bindings ourselves from body patterns.
+          head-args (str/join ", " (take 2 vars))
+          ;; Pabu uses Prolog convention: uppercase identifiers are variables.
+          ;; The UI promotes ?foo syntax for readability — rewrite to Foo
+          ;; before handing to Pabu, then we patch the resulting symbols
+          ;; back to keep our binding logic uniform.
+          ->pabu (fn [s]
+                   (str/replace s #"\?([a-zA-Z])([a-zA-Z0-9_]*)"
+                                (fn [[_ first-c rest]]
+                                  (str (str/upper-case first-c) rest))))
+          body-pabu (->pabu body-text)
+          head-pabu (->pabu head-args)
+          t (str "qresult(" head-pabu ") :- " body-pabu ".")
           {:keys [rules]} (rewrite-parsed (pabu/read-str (rewrite-source t)))
           rule (first rules)
           store (get-in @app-state [:domains domain-id :store])
-          ;; collect rule body patterns and run via naga's store
           patterns (->> (:body rule) (filter vector?))
-          vars-in-head (->> (:head rule) first (filter symbol?))
+          var-syms (mapv symbol vars)
           rows (loop [pats patterns
                       bindings [{}]]
                  (if (empty? pats)
@@ -572,8 +589,10 @@ ancestor(X, Z) :- parent(X, Y), ancestor(Y, Z).
                                     :when (and b' (not (reduced? b')))]
                                 b')]
                      (recur (rest pats) (vec next)))))]
-      {:vars (mapv #(subs (name %) 1) vars-in-head)
-       :rows (mapv (fn [b] (mapv #(get b %) vars-in-head)) rows)})
+      (if (empty? patterns)
+        {:error (str "Couldn't parse query: " body-text)}
+        {:vars (mapv #(subs (name %) 1) var-syms)
+         :rows (mapv (fn [b] (mapv #(get b %) var-syms)) rows)}))
     (catch :default e
       {:error (or (.-message e) (str e))})))
 

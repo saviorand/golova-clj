@@ -1,0 +1,354 @@
+;; Golova example knowledge base.
+;;
+;; Three domains, each chosen to exercise a different style of PKM use:
+;;
+;;   people — small extended family. Shows transitive rules (ancestor),
+;;            join rules (cousin, in-law, fellow-resident, coworker),
+;;            declared types driving form dropdowns.
+;;
+;;   books  — a reading log. Shows discovered vs declared predicates,
+;;            rules that promote books from data ("loved-genre",
+;;            "priority-to-read"), and a saved-query workflow.
+;;
+;;   tasks  — projects with dependencies. Shows transitive blocking
+;;            (depends-on → blocks), critical-path-style derivation.
+;;
+;; Try after importing:
+;;   1. ⌘K, type "alice" → open her entity page → add another relation
+;;   2. ⌘K → "priority" → run the saved query in books
+;;   3. Open tasks/Scratch, look at the 'critical' triples in materialized
+;;   4. In people/parent table, click any cell to inline-edit
+;;
+;; Import via Settings → Import. This REPLACES your existing data.
+
+{:current-domain :people
+ :selection {:kind :scratch}
+ :theme :light
+ :expanded #{:people :books :tasks}
+ :domains
+ {
+  ;; =====================================================================
+  ;; PEOPLE
+  ;; =====================================================================
+  :people
+  {:id :people
+   :label "People"
+   :events []
+   :imports []
+   :program-text
+   "% Small extended family with locations, work, and ages.
+% Click any atom (alice, sf, anthropic, ...) to navigate to its page.
+
+% === FACTS ===
+
+% Three generations of parents
+parent(zeke, alice).
+parent(zoe, alice).
+parent(alice, bob).
+parent(alice, carol).
+parent(bob, dave).
+parent(bob, eve).
+parent(carol, frank).
+parent(carol, grace).
+
+% Spouses (asserted in both directions so rules can match either)
+spouse(zeke, zoe).
+spouse(zoe, zeke).
+spouse(alice, hank).
+spouse(hank, alice).
+spouse(bob, ingrid).
+spouse(ingrid, bob).
+spouse(carol, jerry).
+spouse(jerry, carol).
+
+% Siblings (both directions — sibling is symmetric but Datalog isn't)
+sibling(bob, carol).
+sibling(carol, bob).
+sibling(dave, eve).
+sibling(eve, dave).
+sibling(frank, grace).
+sibling(grace, frank).
+
+% Where they live
+lives-in(zeke, london).
+lives-in(zoe, london).
+lives-in(alice, london).
+lives-in(hank, london).
+lives-in(grace, london).
+lives-in(bob, sf).
+lives-in(dave, sf).
+lives-in(ingrid, sf).
+lives-in(carol, nyc).
+lives-in(frank, nyc).
+lives-in(jerry, nyc).
+lives-in(eve, berlin).
+
+% Where they work
+works-at(bob, stripe).
+works-at(carol, notion).
+works-at(dave, openai).
+works-at(eve, anthropic).
+works-at(frank, github).
+works-at(jerry, github).
+works-at(ingrid, stripe).
+
+% Ages
+age(zeke, 92).
+age(zoe, 90).
+age(alice, 70).
+age(hank, 72).
+age(bob, 45).
+age(ingrid, 44).
+age(carol, 47).
+age(jerry, 49).
+age(dave, 18).
+age(eve, 21).
+age(frank, 22).
+age(grace, 19).
+
+% === DERIVED ===
+
+% Transitive ancestor — the canonical Datalog demo.
+ancestor(X, Y) :- parent(X, Y).
+ancestor(X, Z) :- parent(X, Y), ancestor(Y, Z).
+
+% Descendant is ancestor flipped.
+descendant(X, Y) :- ancestor(Y, X).
+
+% Cousin: your parent's sibling's child.
+cousin(X, Y) :- parent(P1, X), parent(P2, Y), sibling(P1, P2).
+
+% Living in the same city.
+fellow-resident(X, Y) :- lives-in(X, C), lives-in(Y, C).
+
+% Same employer.
+coworker(X, Y) :- works-at(X, E), works-at(Y, E).
+
+% In-law: your spouse's ancestors are your in-laws.
+in-law(X, Y) :- spouse(X, S), ancestor(Y, S).
+"
+   :schema
+   {:types
+    [{:name "person"
+      :constructors ["zeke" "zoe" "alice" "hank" "bob" "ingrid"
+                     "carol" "jerry" "dave" "eve" "frank" "grace"]}
+     {:name "city"
+      :constructors ["sf" "nyc" "london" "berlin" "tokyo" "paris" "lisbon"]}
+     {:name "company"
+      :constructors ["stripe" "notion" "openai" "anthropic" "github" "linear"]}]
+    :predicates
+    [{:name "parent"    :argTypes ["person" "person"]}
+     {:name "spouse"    :argTypes ["person" "person"]}
+     {:name "sibling"   :argTypes ["person" "person"]}
+     {:name "lives-in"  :argTypes ["person" "city"]}
+     {:name "works-at"  :argTypes ["person" "company"]}
+     {:name "age"       :argTypes ["person" "int"]}]
+    :queries
+    [{:name "dave's ancestors"          :text "ancestor(?p, dave)"}
+     {:name "alice's descendants"       :text "ancestor(alice, ?p)"}
+     {:name "everyone living in sf"     :text "lives-in(?p, sf)"}
+     {:name "dave's cousins"            :text "cousin(dave, ?p)"}
+     {:name "anthropic employees"       :text "works-at(?p, anthropic)"}
+     {:name "hank's in-laws"            :text "in-law(hank, ?p)"}
+     {:name "bob's coworkers"           :text "coworker(bob, ?p)"}
+     {:name "london residents"          :text "lives-in(?p, london)"}]}}
+
+  ;; =====================================================================
+  ;; BOOKS
+  ;; =====================================================================
+  :books
+  {:id :books
+   :label "Books"
+   :events []
+   :imports []
+   :program-text
+   "% A reading log: books with author, genre, status, rating.
+% Rules promote 'priority-to-read' from your tastes — see how it works.
+
+% === FACTS ===
+
+% by(book, author) — declared below as discovered (left untyped)
+by(dune, frank-herbert).
+by(foundation, isaac-asimov).
+by(the-dispossessed, ursula-le-guin).
+by(the-left-hand-of-darkness, ursula-le-guin).
+by(the-fifth-season, n-k-jemisin).
+by(the-hobbit, tolkien).
+by(sapiens, harari).
+by(geb, hofstadter).
+by(annihilation, vandermeer).
+by(dawn, octavia-butler).
+by(parable-of-the-sower, octavia-butler).
+by(the-overstory, richard-powers).
+
+% Genres
+in-genre(dune, scifi).
+in-genre(foundation, scifi).
+in-genre(the-dispossessed, scifi).
+in-genre(the-left-hand-of-darkness, scifi).
+in-genre(annihilation, scifi).
+in-genre(dawn, scifi).
+in-genre(parable-of-the-sower, scifi).
+in-genre(the-fifth-season, fantasy).
+in-genre(the-hobbit, fantasy).
+in-genre(sapiens, nonfiction).
+in-genre(geb, nonfiction).
+in-genre(the-overstory, fiction).
+
+% Read status
+status(dune, read).
+status(foundation, read).
+status(the-dispossessed, read).
+status(the-fifth-season, read).
+status(sapiens, read).
+status(the-hobbit, read).
+status(geb, reading).
+status(annihilation, wishlist).
+status(dawn, wishlist).
+status(the-left-hand-of-darkness, wishlist).
+status(parable-of-the-sower, wishlist).
+status(the-overstory, dnf).
+
+% My 1-5 ratings
+rating(dune, 5).
+rating(the-dispossessed, 5).
+rating(foundation, 4).
+rating(the-fifth-season, 5).
+rating(sapiens, 4).
+rating(the-hobbit, 5).
+rating(geb, 5).
+
+% Who recommended what (the recommender is a free-form atom)
+recommended-by(annihilation, alice).
+recommended-by(dawn, bob).
+recommended-by(the-left-hand-of-darkness, alice).
+recommended-by(parable-of-the-sower, alice).
+
+% === DERIVED ===
+
+% Books I rated 5.
+loved(B) :- rating(B, 5).
+
+% A genre I love — any genre with at least one 5-star book in it.
+loved-genre(G) :- rating(B, 5), in-genre(B, G).
+
+% Priority to read: on the wishlist AND in a genre I already love.
+priority-to-read(B) :- in-genre(B, G), loved-genre(G), status(B, wishlist).
+
+% On the wishlist AND someone recommended it.
+to-read-from-friend(B, R) :- recommended-by(B, R), status(B, wishlist).
+
+% An author who wrote at least one of my 5-star reads.
+favorite-author(A) :- by(B, A), rating(B, 5).
+"
+   :schema
+   {:types
+    [{:name "genre"
+      :constructors ["scifi" "fantasy" "nonfiction" "fiction" "biography" "history" "philosophy"]}
+     {:name "status"
+      :constructors ["wishlist" "reading" "read" "dnf" "abandoned"]}]
+    :predicates
+    [{:name "in-genre" :argTypes ["atom" "genre"]}
+     {:name "status"   :argTypes ["atom" "status"]}
+     {:name "rating"   :argTypes ["atom" "int"]}]
+    :queries
+    [{:name "wishlist"                    :text "status(?b, wishlist)"}
+     {:name "loved (5-star)"              :text "rating(?b, 5)"}
+     {:name "priority to read"            :text "priority-to-read(?b)"}
+     {:name "alice's recommendations"     :text "recommended-by(?b, alice)"}
+     {:name "books by ursula le guin"     :text "by(?b, ursula-le-guin)"}
+     {:name "sci-fi I haven't read"
+      :text "status(?b, wishlist), in-genre(?b, scifi)"}
+     {:name "favorite authors"            :text "favorite-author(?a)"}]}}
+
+  ;; =====================================================================
+  ;; TASKS
+  ;; =====================================================================
+  :tasks
+  {:id :tasks
+   :label "Tasks"
+   :events []
+   :imports []
+   :program-text
+   "% Projects with dependencies. The 'blocks' rule is transitive — it
+% shows the full dependency chain, not just direct dependencies.
+
+% === FACTS ===
+
+% project(id, name)
+project(deck, kb-redesign-deck).
+project(api, search-endpoint).
+project(audit, auth-audit).
+project(docs, onboarding-rewrite).
+project(hire, hire-a-designer).
+project(deploy, ship-v3).
+project(spike, embedding-spike).
+
+% Current status
+status(deck, in-progress).
+status(api, in-progress).
+status(audit, blocked).
+status(docs, todo).
+status(hire, todo).
+status(deploy, todo).
+status(spike, todo).
+
+% depends-on(X, Y) — X can't ship until Y is done
+depends-on(deploy, api).
+depends-on(deploy, audit).
+depends-on(audit, hire).
+depends-on(docs, api).
+depends-on(api, spike).
+
+% Owners (names match people deliberately — useful for habit, not linked)
+owner(deck, alice).
+owner(api, bob).
+owner(audit, carol).
+owner(docs, alice).
+owner(hire, dave).
+owner(deploy, bob).
+owner(spike, alice).
+
+% Days until deadline
+due-in(deck, 7).
+due-in(docs, 14).
+due-in(api, 14).
+due-in(audit, 21).
+due-in(hire, 30).
+due-in(deploy, 30).
+due-in(spike, 7).
+
+% === DERIVED ===
+
+% blocks(X, Y) — X is blocking Y from progressing (transitive).
+blocks(X, Y) :- depends-on(Y, X).
+blocks(X, Z) :- blocks(X, Y), blocks(Y, Z).
+
+% Things alice owns.
+alice-owns(P) :- owner(P, alice).
+
+% Critical: anything blocking a project due in 14 days.
+critical(B) :- blocks(B, P), due-in(P, 14).
+
+% Everything alice is blocked on (transitively).
+alice-blocked-by(B) :- owner(P, alice), blocks(B, P).
+"
+   :schema
+   {:types
+    [{:name "project"
+      :constructors ["deck" "api" "audit" "docs" "hire" "deploy" "spike"]}
+     {:name "task-status"
+      :constructors ["todo" "in-progress" "blocked" "done"]}]
+    :predicates
+    [{:name "status"      :argTypes ["project" "task-status"]}
+     {:name "depends-on"  :argTypes ["project" "project"]}
+     {:name "owner"       :argTypes ["project" "atom"]}
+     {:name "due-in"      :argTypes ["project" "int"]}]
+    :queries
+    [{:name "what's blocked"             :text "status(?p, blocked)"}
+     {:name "alice's projects"           :text "owner(?p, alice)"}
+     {:name "what's blocking deploy"     :text "blocks(?p, deploy)"}
+     {:name "critical path"              :text "critical(?p)"}
+     {:name "alice's blockers"           :text "alice-blocked-by(?p)"}
+     {:name "due in 14 days"             :text "due-in(?p, 14)"}]}}
+  }}

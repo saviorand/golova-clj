@@ -118,15 +118,27 @@
 ;; ---------------------------------------------------------------------------
 ;; Predicate / type / rule extraction from a domain
 
+(def ^:private type-tag-attrs
+  "Attributes Naga / Pabu use to encode arity-1 predicates as triples.
+  A fact like `loved(dune).` becomes [dune :rdf/type :loved] under the hood."
+  #{"type"})
+
+(defn- type-tag-triple? [[_ a _]]
+  (and (keyword? a) (contains? type-tag-attrs (name a))))
+
 (defn- domain-predicates
-  "Return seq of {:name k :arity n :facts [...]} for every namespace-bare
-  attribute appearing in the domain's store."
+  "Return seq of {:name k :arity n :facts [...]} for every user-visible
+  attribute in the domain's store. Arity-1 predicates (encoded as
+  `:rdf/type` triples) are surfaced as separate entries named for the tag."
   [domain]
   (let [store (:store domain)
         triples (when store
                   (try (nstore/resolve-pattern store '[?e ?a ?v]) (catch :default _ [])))
-        own-attrs (->> triples (map second) (filter keyword?) distinct)
-        declared (set (map :name (get-in domain [:schema :predicates])))]
+        type-tags (filter type-tag-triple? triples)
+        regular   (remove type-tag-triple? triples)
+        own-attrs (->> regular (map second) (filter keyword?) distinct)
+        declared  (set (map :name (get-in domain [:schema :predicates])))
+        unary-names (->> type-tags (map #(nth % 2)) (filter keyword?) distinct)]
     (concat
      ;; declared predicates (always shown, even with zero facts)
      (for [p (get-in domain [:schema :predicates])]
@@ -135,27 +147,44 @@
         :arg-types (:argTypes p)
         :declared? true
         :facts (vec (filter #(= (keyword (:name p)) (second %)) triples))})
-     ;; discovered predicates from the store
+     ;; discovered arity-2+ predicates
      (for [a own-attrs
            :when (not (contains? declared (name a)))]
        {:name (name a)
         :namespace (namespace a)
-        :arity 2     ;; flat triples represent 2-arity
+        :arity 2
         :declared? false
-        :facts (vec (filter #(= a (second %)) triples))}))))
+        :facts (vec (filter #(= a (second %)) triples))})
+     ;; arity-1 unary predicates (encoded as :type tags)
+     (for [n unary-names]
+       {:name (name n)
+        :arity 1
+        :unary? true
+        :declared? false
+        :facts (vec (filter #(= n (nth % 2)) type-tags))}))))
 
 (defn- domain-rules
   "Return seq of {:name n :arity a :clauses [rule …]} per rule-head, grouped
   so that multi-clause rules (e.g. base + recursive ancestor) appear as one
-  sidebar entry. Arity is user-visible (head args), not the triple-shape (E A V)."
+  sidebar entry. Arity is user-visible. Rules with type-tag heads (encoded
+  arity-1 predicates) are surfaced as arity-1."
   [domain]
   (->> (:rules domain)
        (keep (fn [r]
                (let [head (first (:head r))
-                     head-attr (when (>= (count head) 2) (second head))]
-                 (when (keyword? head-attr)
-                   {:name  (name head-attr)
-                    :arity (max 0 (dec (count head)))
+                     n (count head)]
+                 (cond
+                   (< n 2) nil
+                   ;; Arity-1 encoded as [?x :type :user-pred]
+                   (and (= n 3)
+                        (keyword? (second head))
+                        (contains? type-tag-attrs (name (second head)))
+                        (keyword? (nth head 2)))
+                   {:name (name (nth head 2)) :arity 1 :rule r}
+                   ;; Regular arity-2+ rule [?x :pred ?y]
+                   (keyword? (second head))
+                   {:name  (name (second head))
+                    :arity (max 0 (dec n))
                     :rule  r}))))
        (group-by (juxt :name :arity))
        (map (fn [[[nm ar] clauses]]
@@ -616,72 +645,104 @@
                           {:kind :move-to :src src-id :mover mover} e))}
      "in " [:b label] " ▾"]))
 
-(defn predicate-view [name arity]
-  (let [domain-id (state/current-id)
-        d (state/current)
-        attr (keyword name)
-        triples (filter #(= attr (second %)) (state/all-triples domain-id))
-        declared (first (filter #(and (= name (:name %))
-                                      (= arity (count (:argTypes %))))
-                                (get-in d [:schema :predicates])))
-        arg-types (when declared (:argTypes declared))]
+(defn- unary-predicate-view
+  "Arity-1 predicates (encoded as :rdf/type tags). Show entities in a list,
+  no add-row (asserting requires a separate UX since the underlying assertion
+  is [?x :rdf/type :name])."
+  [domain-id pred-name]
+  (let [tag (keyword pred-name)
+        all (state/all-triples domain-id)
+        my (filter (fn [tr] (and (type-tag-triple? tr)
+                                 (= tag (nth tr 2))))
+                   all)]
     [:div.view
      [:div.view-head
-      [:h2.mono (str name "/" arity)]
-      [:span.desc (count triples) " fact" (when (not= 1 (count triples)) "s")]
-      (if declared
-        [:span.pill.declared "declared"]
-        [:span.pill "discovered"])
-      [move-to-pill domain-id
-       (fn [src dst] (state/move-predicate! src dst name arity))]
-      [:div.actions-right
-       (when declared
-         [:button.ghost.danger
-          {:on-click (fn []
-                       (when (js/confirm
-                              (str "Delete predicate declaration " name "/" arity
-                                   "?\nFacts are not deleted."))
-                         (state/delete-predicate! domain-id name arity)
-                         (state/select! {:kind :scratch})))}
-          "Delete declaration"])]]
-     [:table.facts
-      [:thead
-       [:tr
+      [:h2.mono (str pred-name "/1")]
+      [:span.desc (count my) " entit" (if (= 1 (count my)) "y" "ies")]
+      [:span.pill "unary (derived)"]]
+     (if (empty? my)
+       [:div.empty
+        [:div "No entities have been derived for " [:b pred-name] " yet."]
+        [:div {:style {:margin-top "8px" :color "var(--dim)"}}
+         "Arity-1 predicates are produced by rules with single-arg heads."]]
+       [:div.unary-list
+        (for [[i [e _ _]] (map-indexed vector my)]
+          ^{:key i}
+          [:div.unary-entry
+           [:span.icon "◇"]
+           (atom-link e)])])
+     [:div.hint
+      "This is a category (arity-1 predicate). Stored under "
+      [:code "rdf/type"] " in the triple store."]]))
+
+(defn predicate-view [name arity]
+  (if (= 1 arity)
+    [unary-predicate-view (state/current-id) name]
+    (let [domain-id (state/current-id)
+          d (state/current)
+          attr (keyword name)
+          triples (filter #(= attr (second %)) (state/all-triples domain-id))
+          declared (first (filter #(and (= name (:name %))
+                                        (= arity (count (:argTypes %))))
+                                  (get-in d [:schema :predicates])))
+          arg-types (when declared (:argTypes declared))]
+      [:div.view
+       [:div.view-head
+        [:h2.mono (str name "/" arity)]
+        [:span.desc (count triples) " fact" (when (not= 1 (count triples)) "s")]
         (if declared
-          (for [[i t] (map-indexed vector arg-types)]
-            ^{:key i}
-            [:th [:div.h
-                  [:span.type-icon {:title t} (type-icon-for t)]
-                  [:span t]]])
-          [:<> [:th [:div.h [:span.type-icon "◇"] [:span "subject"]]]
-               [:th [:div.h [:span.type-icon "◇"] [:span "object"]]]])
-        [:th ""]]]
-      [:tbody
-       (if (empty? triples)
-         [:tr [:td {:col-span (inc (or (count arg-types) 2))
-                    :style {:padding "24px" :text-align "center" :color "var(--muted)"
-                            :font-family "var(--sans-font)"}}
-               "No facts yet — use the row below to add one."]]
-         (for [[i tr] (map-indexed vector triples)]
-           ^{:key (pr-str tr)}
-           [pred-edit-row domain-id (or arg-types []) tr]))]
-      (let [effective-types (or arg-types ["atom" "atom"])]
-        (when (= 2 (count effective-types))
-          [:tfoot
-           [pred-add-row domain-id name effective-types]]))]
-     (when-not declared
-       [:div.declare-hint
-        "This predicate isn't declared. "
-        [:a.atom-link
-         {:on-click #(state/open-modal! {:kind :new-predicate
-                                          :preset-name name
-                                          :domain domain-id})}
-         "Declare types"] " to get a typed table with dropdowns."])
-     (when (and declared (not= 2 (count arg-types)))
-       [:div.declare-hint
-        "Add-row form only supports arity-2 predicates today. "
-        [:span {:style {:color "var(--dim)"}}
-         "(Arity " (count arg-types) " requires entity reification.)"]])]))
+          [:span.pill.declared "declared"]
+          [:span.pill "discovered"])
+        [move-to-pill domain-id
+         (fn [src dst] (state/move-predicate! src dst name arity))]
+        [:div.actions-right
+         (when declared
+           [:button.ghost.danger
+            {:on-click (fn []
+                         (when (js/confirm
+                                (str "Delete predicate declaration " name "/" arity
+                                     "?\nFacts are not deleted."))
+                           (state/delete-predicate! domain-id name arity)
+                           (state/select! {:kind :scratch})))}
+            "Delete declaration"])]]
+       [:table.facts
+        [:thead
+         [:tr
+          (if declared
+            (for [[i t] (map-indexed vector arg-types)]
+              ^{:key i}
+              [:th [:div.h
+                    [:span.type-icon {:title t} (type-icon-for t)]
+                    [:span t]]])
+            [:<> [:th [:div.h [:span.type-icon "◇"] [:span "subject"]]]
+                 [:th [:div.h [:span.type-icon "◇"] [:span "object"]]]])
+          [:th ""]]]
+        [:tbody
+         (if (empty? triples)
+           [:tr [:td {:col-span (inc (or (count arg-types) 2))
+                      :style {:padding "24px" :text-align "center" :color "var(--muted)"
+                              :font-family "var(--sans-font)"}}
+                 "No facts yet — use the row below to add one."]]
+           (for [[i tr] (map-indexed vector triples)]
+             ^{:key (pr-str tr)}
+             [pred-edit-row domain-id (or arg-types []) tr]))]
+        (let [effective-types (or arg-types ["atom" "atom"])]
+          (when (= 2 (count effective-types))
+            [:tfoot
+             [pred-add-row domain-id name effective-types]]))]
+       (when-not declared
+         [:div.declare-hint
+          "This predicate isn't declared. "
+          [:a.atom-link
+           {:on-click #(state/open-modal! {:kind :new-predicate
+                                            :preset-name name
+                                            :domain domain-id})}
+           "Declare types"] " to get a typed table with dropdowns."])
+       (when (and declared (not= 2 (count arg-types)))
+         [:div.declare-hint
+          "Add-row form only supports arity-2 predicates today. "
+          [:span {:style {:color "var(--dim)"}}
+           "(Arity " (count arg-types) " requires entity reification.)"]])])))
 
 ;; ---------------------------------------------------------------------------
 ;; Type view
@@ -750,6 +811,13 @@
 
 (defn- fmt-rule-pattern [p]
   (cond
+    (and (vector? p) (= 3 (count p))
+         (keyword? (second p))
+         (contains? type-tag-attrs (name (second p)))
+         (keyword? (nth p 2)))
+    ;; Arity-1 unary predicate: [?x :rdf/type :loved] => loved(?x)
+    (let [[e _ v] p]
+      (str (name v) "(" (fmt-rule-arg e) ")"))
     (vector? p)
     (let [[e a v] p]
       (str (fmt-pred-name a) "(" (fmt-rule-arg e) ", " (fmt-rule-arg v) ")"))
