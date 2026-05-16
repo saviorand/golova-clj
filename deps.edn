@@ -1,0 +1,11 @@
+{:paths ["src"]
+ :deps {org.clojure/clojure       {:mvn/version "1.12.4"}
+        org.clojars.quoll/naga    {:mvn/version "0.3.15"}
+        org.replikativ/datahike   {:mvn/version "0.8.1681"}
+        prismatic/schema          {:mvn/version "1.4.1"}
+        reagent/reagent           {:mvn/version "1.2.0"}}
+ :aliases
+ {:cljs
+  {:extra-deps
+   {org.clojure/clojurescript {:mvn/version "1.12.134"}
+    thheller/shadow-cljs      {:mvn/version "3.3.6"}}}}}

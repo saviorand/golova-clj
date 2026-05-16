@@ -1,0 +1,17 @@
+{
+  "name": "golova",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "watch": "shadow-cljs watch app",
+    "release": "shadow-cljs release app",
+    "server": "shadow-cljs server"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "shadow-cljs": "3.3.6"
+  }
+}
