@@ -351,11 +351,16 @@
      [:div.sidebar-footer
       [:div.foot-row
        [:button.ghost
+        {:title "Command palette (⌘K)"
+         :on-click #(state/open-palette!)}
+        "⌘ Search / commands"]]
+      [:div.foot-row
+       [:button.ghost
         {:title "Settings"
          :on-click #(state/open-modal! {:kind :settings})}
         "⚙ Settings"]]
-      [:div.kshort [:span.lbl "Rebuild"] [:kbd "⌘↵"]]
-      [:div.kshort [:span.lbl "Focus query"] [:kbd "⌘K"]]]]))
+      [:div.kshort [:span.lbl "Palette"] [:kbd "⌘K"]]
+      [:div.kshort [:span.lbl "Rebuild"] [:kbd "⌘↵"]]]]))
 
 ;; ---------------------------------------------------------------------------
 ;; Scratch (program editor)
@@ -466,27 +471,39 @@
                   :else "edited — press Rebuild")]]]
          (when (:store d)
            (let [triples (state/all-triples current-domain)
-                 own (:asserted d)]
+                 total (count triples)
+                 shown (take 200 triples)
+                 retract!
+                 (fn [tr prov]
+                   (let [warn (when (= prov :program)
+                                "This fact is in the program text. Retracting only adds an event that suppresses it on rebuild — if you edit the program later, the same fact may reappear.\n\nContinue?")]
+                     (when (or (not warn) (js/confirm warn))
+                       (state/retract-triple! current-domain (vec tr)))))]
              [:div {:style {:margin-top "24px"}}
-              [:h3 {:style {:font-size "13px" :color "var(--muted)"
-                            :margin "0 0 8px"
-                            :text-transform "uppercase" :letter-spacing ".04em"}}
+              [:h3.materialized-h
                "Materialized triples"
-               [:span {:style {:color "var(--dim)" :font-weight 400 :margin-left "8px"
-                               :text-transform "none" :letter-spacing 0}}
-                (count triples) " total"]]
+               [:span.count-hint total " total"
+                (when (> total 200) (str " · showing first 200"))]]
               [:table.facts
-               [:thead [:tr [:th "subject"] [:th "predicate"] [:th "object"] [:th "kind"]]]
+               [:thead [:tr [:th "subject"] [:th "predicate"] [:th "object"]
+                        [:th "source"] [:th ""]]]
                [:tbody
-                (for [[i [e a v :as tr]] (map-indexed vector (take 200 triples))]
-                  ^{:key i}
-                  [:tr
-                   [:td (atom-link e)]
-                   [:td [:span.mono (fmt-val a)]]
-                   [:td (atom-link v)]
-                   [:td [:span.pill
-                         {:class (if (contains? own (vec tr)) "fact" "derived")}
-                         (if (contains? own (vec tr)) "asserted" "derived")]]])]]]))]))))
+                (for [[i [e a v :as tr]] (map-indexed vector shown)]
+                  (let [prov (state/triple-provenance current-domain tr)]
+                    ^{:key i}
+                    [:tr
+                     [:td (atom-link e)]
+                     [:td [:span.mono (fmt-val a)]]
+                     [:td (atom-link v)]
+                     [:td [:span.pill {:class (str "prov-" (name prov))} (name prov)]]
+                     [:td.delete
+                      (when (not= :derived prov)
+                        [:button.ghost.danger
+                         {:title (case prov
+                                   :event "Retract this event"
+                                   :imported "Retract imported triple"
+                                   :program "Suppress this program axiom")
+                          :on-click #(retract! tr prov)} "×"])]]))]]]))]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Predicate table view
@@ -845,44 +862,129 @@
 ;; ---------------------------------------------------------------------------
 ;; Entity view
 
+(defn- entity-add-form
+  "Inline add-fact form for an entity, with the entity fixed in one slot
+  and a typed input in the other. Commits on Enter or '+ Add'."
+  [domain-id entity attr role arg-types]
+  (let [val (r/atom {:val ""})
+        err (r/atom nil)]
+    (fn [_ entity attr role arg-types]
+      (let [other-type (case role
+                         :subject (or (second arg-types) "atom")
+                         :object  (or (first arg-types)  "atom"))
+            commit (fn []
+                     (try
+                       (let [v (state/coerce-value domain-id other-type (:val @val))
+                             triple (case role
+                                      :subject [entity attr v]
+                                      :object  [v attr entity])]
+                         (state/assert-triple! domain-id triple "form")
+                         (reset! val {:val ""})
+                         (reset! err nil))
+                       (catch :default ex
+                         (reset! err (.-message ex)))))
+            input [typed-input {:domain-id domain-id :arg-type other-type
+                                :state val :placeholder other-type
+                                :on-enter commit}]
+            fixed [:span.entity-fixed (fmt-val entity)]]
+        [:div.entity-add
+         [:div.row
+          (if (= role :subject) fixed input)
+          [:span.arrow "→"]
+          (if (= role :subject) input fixed)
+          [:button.primary.small {:on-click commit :title "Add (Enter)"} "+"]]
+         (when @err [:div.err.mini @err])]))))
+
+(defn- entity-relation-roles
+  "Returns the set of roles `:subject` / `:object` the entity plays for these
+  triples (an attr group)."
+  [entity triples]
+  (cond-> #{}
+    (some (fn [[e _ _]] (= e entity)) triples) (conj :subject)
+    (some (fn [[_ _ v]] (= v entity)) triples) (conj :object)))
+
+(defn- relation-form-block
+  [domain-id entity attr arg-types roles]
+  [:div.add-zone
+   (for [role (sort roles)]
+     ^{:key role}
+     [entity-add-form domain-id entity attr role arg-types])])
+
 (defn entity-view [e]
-  (let [triples (state/entity-mentions (state/current-id) e)
-        by-attr (group-by second triples)]
-    [:div.view
-     [:div {:style {:display "flex" :align-items "center" :gap "14px" :margin-bottom "24px"}}
-      [:div {:style {:width "56px" :height "56px" :border-radius "10px"
-                     :background "linear-gradient(135deg, var(--accent-soft), var(--accent-2-soft))"
-                     :display "flex" :align-items "center" :justify-content "center"
-                     :font-family "var(--code-font)" :font-size "24px"
-                     :font-weight 700 :color "var(--accent-2)"}}
-       (str/upper-case (subs (fmt-val e) 0 1))]
-      [:div
-       [:div.mono {:style {:font-size "30px" :font-weight 700}} (fmt-val e)]
-       [:div {:style {:color "var(--muted)" :font-size "12px"}}
-        (count triples) " mention"
-        (when (not= 1 (count triples)) "s")]]]
-     (if (empty? triples)
-       [:div.empty [:div "No facts mention this entity."]]
-       (for [[attr trs] (sort-by (comp str first) by-attr)]
-         ^{:key attr}
-         [:div {:style {:margin "20px 0"}}
-          [:h3 {:style {:font-size "12px" :color "var(--muted)" :margin "0 0 8px"
-                        :text-transform "uppercase" :letter-spacing ".04em"}}
-           (fmt-val attr) [:span {:style {:color "var(--dim)" :font-weight 400
-                                          :text-transform "none" :letter-spacing 0
-                                          :margin-left "8px"}}
-                           "— " (count trs)]]
-          (for [[i [ee _ vv :as tr]] (map-indexed vector trs)]
-            ^{:key i}
-            [:div {:style {:padding "6px 10px" :border-bottom "1px solid var(--border)"
-                           :font-family "var(--code-font)" :font-size "13px"
-                           :display "flex" :gap "8px" :align-items "center"}}
-             [:span (atom-link ee)]
-             [:span {:style {:color "var(--dim)"}} "→"]
-             [:span (atom-link vv)]
-             [:button.ghost.danger {:style {:margin-left "auto"}
-                                    :on-click #(state/retract-triple! (state/current-id) (vec tr))}
-              "×"]])]))]))
+  (let [open-add (r/atom nil)] ;; nil | {:name "..." :arg-types [...] :role :subject}
+    (fn [e]
+      (let [domain-id (state/current-id)
+            d (state/current)
+            triples (state/entity-mentions domain-id e)
+            by-attr (group-by second triples)
+            declared-preds (->> (get-in d [:schema :predicates])
+                                (filter #(= 2 (count (:argTypes %)))))
+            seen-attrs (set (keys by-attr))
+            unseen-preds (->> declared-preds
+                              (remove #(seen-attrs (keyword (:name %)))))]
+        [:div.view
+         [:div.entity-hero
+          [:div.avatar (str/upper-case (subs (fmt-val e) 0 1))]
+          [:div
+           [:div.mono.title (fmt-val e)]
+           [:div.subtitle (count triples) " mention"
+            (when (not= 1 (count triples)) "s")]]]
+
+         (if (empty? triples)
+           [:div.empty
+            [:div "No facts mention this entity yet."]
+            [:div {:style {:margin-top "8px" :color "var(--dim)"}}
+             "Use the picker below to add your first relation."]]
+           (for [[attr trs] (sort-by (comp str first) by-attr)]
+             ^{:key (str attr)}
+             (let [decl (first (filter #(and (= (name attr) (:name %))
+                                             (= 2 (count (:argTypes %))))
+                                       (get-in d [:schema :predicates])))
+                   arg-types (when decl (:argTypes decl))
+                   roles (entity-relation-roles e trs)]
+               [:div.relation-group
+                [:h3.rel-attr
+                 [:span.rel-name (fmt-val attr)]
+                 [:span.dim " — " (count trs)]
+                 (when decl [:span.pill.declared.mini "declared"])]
+                (for [[i [ee _ vv :as tr]] (map-indexed vector trs)]
+                  ^{:key (str (pr-str tr))}
+                  [:div.fact-row
+                   [:span (atom-link ee)]
+                   [:span.arrow "→"]
+                   [:span (atom-link vv)]
+                   [:button.ghost.danger.remove
+                    {:on-click #(state/retract-triple! domain-id (vec tr))
+                     :title "Retract"} "×"]])
+                [relation-form-block domain-id e attr arg-types roles]])))
+
+         ;; Add another relation
+         (when (seq declared-preds)
+           [:div.new-relation
+            [:h3.section-h "Add another relation"]
+            [:div.pred-picker
+             (for [p unseen-preds]
+               ^{:key (:name p)}
+               [:button.chip
+                {:class (when (and @open-add (= (:name p) (:name @open-add))) "active")
+                 :on-click #(reset! open-add
+                                    {:name (:name p) :arg-types (:argTypes p)
+                                     :role :subject})}
+                (:name p) "/" (count (:argTypes p))])
+             (when (empty? unseen-preds)
+               [:span.dim {:style {:padding "4px 0"}}
+                "All declared predicates already have facts for this entity."])]
+            (when-let [{:keys [name arg-types role]} @open-add]
+              [:div.add-inline
+               [:div.role-toggle
+                [:button {:class (when (= role :subject) "active")
+                          :on-click #(swap! open-add assoc :role :subject)}
+                 "as subject"]
+                [:button {:class (when (= role :object) "active")
+                          :on-click #(swap! open-add assoc :role :object)}
+                 "as object"]
+                [:button.ghost {:on-click #(reset! open-add nil)} "Cancel"]]
+               [entity-add-form domain-id e (keyword name) role arg-types]])])]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Modal
@@ -1080,6 +1182,152 @@
           nil)]])))
 
 ;; ---------------------------------------------------------------------------
+;; Command palette (Cmd-K).
+
+(defn- domain-entities
+  "Set of keyword entities in a domain's store + type constructors."
+  [d]
+  (let [store (:store d)
+        in-store (when store
+                   (->> (try (nstore/resolve-pattern store '[?e ?a ?v])
+                             (catch :default _ []))
+                        (mapcat (fn [[e _ v]] [e v]))
+                        (filter keyword?)
+                        set))
+        ctors (->> (get-in d [:schema :types])
+                   (mapcat (fn [t] (map keyword (:constructors t))))
+                   set)]
+    (into (or in-store #{}) ctors)))
+
+(defn- palette-candidates
+  "Build the full candidate list for the current state. Each item:
+   {:kind … :label … :sublabel … :icon … :run (fn []) :sort-key …}"
+  [state]
+  (let [doms   (:domains state)
+        cur-id (:current-domain state)
+        d      (get doms cur-id)
+        nav    (fn [sel] #(do (state/close-palette!) (state/select! sel)))
+        modal  (fn [m]   #(do (state/close-palette!) (state/open-modal! m)))]
+    (concat
+     ;; Commands — always available
+     [{:kind :cmd :label "New domain…" :icon "+"
+       :run (modal {:kind :new-domain})}
+      {:kind :cmd :label "Open settings" :icon "⚙"
+       :run (modal {:kind :settings})}]
+     (when cur-id
+       [{:kind :cmd :label (str "New type in " (:label d) "…") :icon "◆"
+         :run (modal {:kind :new-type :domain cur-id})}
+        {:kind :cmd :label (str "New predicate in " (:label d) "…") :icon "▦"
+         :run (modal {:kind :new-predicate :domain cur-id})}
+        {:kind :cmd :label (str "New rule in " (:label d) "…") :icon "ƒ"
+         :run (modal {:kind :new-rule :domain cur-id})}
+        {:kind :cmd :label (str "Save query in " (:label d) "…") :icon "?"
+         :run (modal {:kind :new-query :domain cur-id})}
+        {:kind :cmd :label (str "Open scratch for " (:label d)) :icon "✎"
+         :run (nav {:kind :scratch})}])
+     ;; Domains
+     (for [[id dd] (sort-by (comp str first) doms)]
+       {:kind :domain :label (:label dd) :sublabel "domain" :icon "□"
+        :run #(do (state/close-palette!) (state/switch-domain! id))})
+     ;; Things in the current domain
+     (when cur-id
+       (concat
+        (for [t (get-in d [:schema :types])]
+          {:kind :type :label (:name t) :sublabel "type" :icon "◆"
+           :run (nav {:kind :type :name (:name t)})})
+        (for [p (domain-predicates d)]
+          {:kind :pred
+           :label (str (:name p) "/" (:arity p))
+           :sublabel (if (:declared? p) "predicate" "predicate (discovered)")
+           :icon (if (:declared? p) "▦" "▢")
+           :run (nav {:kind :predicate :name (:name p) :arity (:arity p)})})
+        (for [r (domain-rules d)]
+          {:kind :rule
+           :label (str (:name r) "/" (:arity r))
+           :sublabel "rule"
+           :icon "ƒ"
+           :run (nav {:kind :rule :name (:name r)})})
+        (for [q (get-in d [:schema :queries])]
+          {:kind :query :label (:name q) :sublabel "saved query" :icon "?"
+           :run (nav {:kind :query :name (:name q)})})
+        (for [e (sort-by str (domain-entities d))]
+          {:kind :entity :label (fmt-val e) :sublabel "entity" :icon "◇"
+           :run (nav {:kind :entity :name e})}))))))
+
+(defn- match-score
+  "Return a positive score for candidates matching `q`, or nil to drop.
+  Cheap fuzzy: prefer prefix matches, then substring."
+  [q label]
+  (let [lab (str/lower-case label)
+        q   (str/lower-case (str/trim q))]
+    (cond
+      (str/blank? q)              0
+      (str/starts-with? lab q)    (- 200 (count label))
+      (str/includes? lab q)       (- 100 (count label))
+      :else                       nil)))
+
+(defn- kind-rank [k]
+  ;; Order groups when query is blank
+  (get {:cmd 0 :domain 1 :type 2 :pred 3 :rule 4 :query 5 :entity 6} k 9))
+
+(defn- filter-palette [cands q]
+  (->> cands
+       (remove nil?)
+       (keep (fn [c]
+               (when-let [s (match-score q (:label c))]
+                 (assoc c :score s))))
+       (sort-by (juxt #(- (:score %)) #(kind-rank (:kind %)) :label))
+       vec))
+
+(defn palette []
+  (let [p (:palette @app-state)]
+    (when (:open? p)
+      (let [cands (filter-palette (palette-candidates @app-state) (:query p))
+            n (count cands)
+            idx (if (pos? n) (mod (max 0 (or (:index p) 0)) n) 0)
+            chosen (when (pos? n) (nth cands idx))]
+        [:div.palette-overlay
+         {:on-click (fn [e]
+                      (when (= (.-target e) (.-currentTarget e))
+                        (state/close-palette!)))}
+         [:div.palette-card
+          [:div.palette-search
+           [:span.k "⌘K"]
+           [:input.palette-input
+            {:placeholder "Search or jump anywhere — type a name, predicate, rule…"
+             :auto-focus true
+             :value (:query p)
+             :on-change #(state/set-palette-query! (.. % -target -value))
+             :on-key-down (fn [e]
+                            (cond
+                              (= "Escape" (.-key e))
+                              (state/close-palette!)
+                              (= "ArrowDown" (.-key e))
+                              (do (.preventDefault e) (state/palette-move! 1))
+                              (= "ArrowUp" (.-key e))
+                              (do (.preventDefault e) (state/palette-move! -1))
+                              (= "Enter" (.-key e))
+                              (when chosen
+                                (.preventDefault e)
+                                ((:run chosen)))))}]
+           [:span.count (str n " result" (when (not= 1 n) "s"))]]
+          (if (zero? n)
+            [:div.palette-empty "No matches. Try a different query."]
+            [:div.palette-list
+             (for [[i c] (map-indexed vector cands)]
+               ^{:key i}
+               [:div.palette-item {:class (when (= i idx) "active")
+                                    :on-click #((:run c))
+                                    :on-mouse-enter #(state/palette-set-index! i)}
+                [:span.icon (:icon c)]
+                [:span.lbl (:label c)]
+                (when (:sublabel c) [:span.sub (:sublabel c)])])])
+          [:div.palette-foot
+           [:span [:kbd "↑↓"] " navigate "]
+           [:span [:kbd "↵"] " select "]
+           [:span [:kbd "esc"] " close"]]]]))))
+
+;; ---------------------------------------------------------------------------
 ;; Floating popovers (quick-add, domain menu, move-to).
 
 (defn popover []
@@ -1198,4 +1446,5 @@
     [topbar]
     [main]]
    [modal]
-   [popover]])
+   [popover]
+   [palette]])

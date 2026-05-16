@@ -200,25 +200,44 @@ ancestor(X, Z) :- parent(X, Y), ancestor(Y, Z).
         [e a v] (filter ok? all-tr)]
     [e (keyword from-ns (name a)) v]))
 
+(defn- event-axioms
+  "Walk the event log to compute the set of triples added or removed by
+  asserts/retracts (independent of program axioms)."
+  [events]
+  (reduce
+   (fn [s {:keys [op triple]}]
+     (case op
+       :assert  (conj s (normalize-triple triple))
+       :retract (disj s (normalize-triple triple))
+       s))
+   #{} events))
+
 (defn- rebuild-domain [domain all-domains]
   (try
-    (let [prog-text (effective-program-text domain)
-          parsed (if (str/blank? prog-text)
-                   {:rules [] :axioms []}
-                   (rewrite-parsed (pabu/read-str (rewrite-source prog-text))))
+    (let [prog-text   (effective-program-text domain)
+          parsed      (if (str/blank? prog-text)
+                        {:rules [] :axioms []}
+                        (rewrite-parsed (pabu/read-str (rewrite-source prog-text))))
           {:keys [rules axioms]} parsed
-          own-axioms (apply-events axioms (:events domain))
-          imported (imported-axioms all-domains (:imports domain))
-          final-axioms (into own-axioms (map normalize-triple imported))
-          program (rules/create-program rules (vec final-axioms))
-          store0 (dh-store/empty-store)
+          prog-axioms (set (map normalize-triple axioms))
+          ev-axioms   (event-axioms (:events domain))
+          ;; Program axioms minus retracted-by-event, plus event asserts.
+          own-axioms  (apply-events axioms (:events domain))
+          imported    (map normalize-triple (imported-axioms all-domains (:imports domain)))
+          import-set  (set imported)
+          final-axioms (into own-axioms imported)
+          program     (rules/create-program rules (vec final-axioms))
+          store0      (dh-store/empty-store)
           [final-store stats _] (engine/run {:store store0} program)]
       (assoc domain
              :store final-store
              :rules rules
              :stats stats
              :asserted own-axioms
-             :imported (set (map normalize-triple imported))
+             :imported import-set
+             :provenance {:program  prog-axioms
+                          :event    ev-axioms
+                          :imported import-set}
              :program-text prog-text
              :build-error nil))
     (catch :default e
@@ -286,6 +305,16 @@ ancestor(X, Z) :- parent(X, Y), ancestor(Y, Z).
 
 (defn open-modal! [m] (swap! app-state assoc :modal m))
 (defn close-modal! []  (swap! app-state assoc :modal nil))
+
+;; --- command palette ---
+(defn open-palette!  []         (swap! app-state assoc :palette {:open? true :query "" :index 0}))
+(defn close-palette! []         (swap! app-state assoc :palette nil))
+(defn toggle-palette! []
+  (if (get-in @app-state [:palette :open?])
+    (close-palette!) (open-palette!)))
+(defn set-palette-query! [q]    (swap! app-state update :palette assoc :query q :index 0))
+(defn palette-move! [delta]     (swap! app-state update-in [:palette :index] (fnil + 0) delta))
+(defn palette-set-index! [i]    (swap! app-state assoc-in [:palette :index] i))
 
 ;; ---------------------------------------------------------------------------
 ;; Domain CRUD
@@ -612,3 +641,18 @@ ancestor(X, Z) :- parent(X, Y), ancestor(Y, Z).
     (if store
       (try (nstore/resolve-pattern store '[?e ?a ?v]) (catch :default _ []))
       [])))
+
+(defn triple-provenance
+  "Return the highest-priority provenance tag for a triple in a domain:
+  :event > :imported > :program > :derived. Note: an assert via the form for
+  the same triple already in :program will appear in BOTH; :event takes
+  precedence because that's the user's most-recent intent (and the one whose
+  retract behaves correctly)."
+  [domain-id triple]
+  (let [t (normalize-triple triple)
+        prov (get-in @app-state [:domains domain-id :provenance])]
+    (cond
+      (contains? (:event    prov) t) :event
+      (contains? (:imported prov) t) :imported
+      (contains? (:program  prov) t) :program
+      :else                          :derived)))

@@ -28,11 +28,11 @@
        (cond
          (and cmd? (= (.toLowerCase key) "k"))
          (do (.preventDefault e)
-             ;; focus the topbar query input
-             (some-> (.querySelector js/document ".topbar input.query") .focus))
+             (state/toggle-palette!))
 
          (= key "Escape")
          (cond
+           (get-in @app-state [:palette :open?]) (state/close-palette!)
            (:popover @app-state) (swap! app-state assoc :popover nil)
            (:modal   @app-state) (state/close-modal!)))))))
 
