@@ -873,11 +873,15 @@
 (defn query-view [name]
   (let [d (state/current)
         q (first (filter #(= name (:name %)) (get-in d [:schema :queries])))
-        local (r/atom {:text (:text q) :result nil})]
-    (fn []
+        local (r/atom {:text (:text q) :loaded-name name :result nil})]
+    (fn [name]
       (let [domain-id (state/current-id)
             d (state/current)
             q (first (filter #(= name (:name %)) (get-in d [:schema :queries])))]
+        ;; If the user switched to a different saved query, reset local
+        ;; so the textarea shows the new query's body, not the previous one.
+        (when (not= name (:loaded-name @local))
+          (reset! local {:text (:text q) :loaded-name name :result nil}))
         (if-not q
           [:div.view [:div.empty [:h3 "Query not found"]]]
           [:div.view
@@ -971,6 +975,23 @@
     (some (fn [[e _ _]] (= e entity)) triples) (conj :subject)
     (some (fn [[_ _ v]] (= v entity)) triples) (conj :object)))
 
+(defn- canonical-symmetric
+  "Drop self-loops and pick one direction for symmetric pairs.
+  When both [E A V] and [V A E] exist, keep only the one with E ≤ V lex
+  order. Used to de-noise the entity view where derived symmetric
+  relations (fellow-resident, coworker, sibling…) otherwise appear twice."
+  [triples]
+  (let [present (set (map (juxt first second #(nth % 2)) triples))]
+    (filter
+      (fn [[e a v]]
+        (cond
+          (= e v) false
+          (and (contains? present [v a e])
+               (pos? (compare (str e) (str v))))
+          false
+          :else true))
+      triples)))
+
 (defn- relation-form-block
   [domain-id entity attr arg-types roles]
   [:div.add-zone
@@ -979,7 +1000,7 @@
      [entity-add-form domain-id entity attr role arg-types])])
 
 (defn entity-view [e]
-  (let [open-add (r/atom nil)] ;; nil | {:name "..." :arg-types [...] :role :subject}
+  (let [ui-state (r/atom {:open-add nil :dedupe? true})]
     (fn [e]
       (let [domain-id (state/current-id)
             d (state/current)
@@ -989,14 +1010,22 @@
                                 (filter #(= 2 (count (:argTypes %)))))
             seen-attrs (set (keys by-attr))
             unseen-preds (->> declared-preds
-                              (remove #(seen-attrs (keyword (:name %)))))]
+                              (remove #(seen-attrs (keyword (:name %)))))
+            dedupe? (:dedupe? @ui-state)]
         [:div.view
          [:div.entity-hero
           [:div.avatar (str/upper-case (subs (fmt-val e) 0 1))]
           [:div
            [:div.mono.title (fmt-val e)]
            [:div.subtitle (count triples) " mention"
-            (when (not= 1 (count triples)) "s")]]]
+            (when (not= 1 (count triples)) "s")]]
+          [:div.entity-controls
+           [:button.ghost.small
+            {:title (if dedupe?
+                      "Currently hiding self-loops and one direction of symmetric pairs"
+                      "Showing every triple, including duplicates and self-loops")
+             :on-click #(swap! ui-state update :dedupe? not)}
+            (if dedupe? "showing canonical" "showing all")]]]
 
          (if (empty? triples)
            [:div.empty
@@ -1009,13 +1038,19 @@
                                              (= 2 (count (:argTypes %))))
                                        (get-in d [:schema :predicates])))
                    arg-types (when decl (:argTypes decl))
-                   roles (entity-relation-roles e trs)]
+                   roles (entity-relation-roles e trs)
+                   shown (if dedupe? (canonical-symmetric trs) trs)
+                   hidden (- (count trs) (count shown))]
                [:div.relation-group
                 [:h3.rel-attr
                  [:span.rel-name (fmt-val attr)]
-                 [:span.dim " — " (count trs)]
+                 [:span.dim " — " (count shown)
+                  (when (pos? hidden)
+                    [:span.tiny-hint
+                     " (" hidden " " (if (= 1 hidden) "duplicate" "duplicates")
+                     " filtered)"])]
                  (when decl [:span.pill.declared.mini "declared"])]
-                (for [[i [ee _ vv :as tr]] (map-indexed vector trs)]
+                (for [[i [ee _ vv :as tr]] (map-indexed vector shown)]
                   ^{:key (str (pr-str tr))}
                   [:div.fact-row
                    [:span (atom-link ee)]
@@ -1028,31 +1063,32 @@
 
          ;; Add another relation
          (when (seq declared-preds)
-           [:div.new-relation
-            [:h3.section-h "Add another relation"]
-            [:div.pred-picker
-             (for [p unseen-preds]
-               ^{:key (:name p)}
-               [:button.chip
-                {:class (when (and @open-add (= (:name p) (:name @open-add))) "active")
-                 :on-click #(reset! open-add
-                                    {:name (:name p) :arg-types (:argTypes p)
-                                     :role :subject})}
-                (:name p) "/" (count (:argTypes p))])
-             (when (empty? unseen-preds)
-               [:span.dim {:style {:padding "4px 0"}}
-                "All declared predicates already have facts for this entity."])]
-            (when-let [{:keys [name arg-types role]} @open-add]
-              [:div.add-inline
-               [:div.role-toggle
-                [:button {:class (when (= role :subject) "active")
-                          :on-click #(swap! open-add assoc :role :subject)}
-                 "as subject"]
-                [:button {:class (when (= role :object) "active")
-                          :on-click #(swap! open-add assoc :role :object)}
-                 "as object"]
-                [:button.ghost {:on-click #(reset! open-add nil)} "Cancel"]]
-               [entity-add-form domain-id e (keyword name) role arg-types]])])]))))
+           (let [open-add (:open-add @ui-state)]
+             [:div.new-relation
+              [:h3.section-h "Add another relation"]
+              [:div.pred-picker
+               (for [p unseen-preds]
+                 ^{:key (:name p)}
+                 [:button.chip
+                  {:class (when (and open-add (= (:name p) (:name open-add))) "active")
+                   :on-click #(swap! ui-state assoc :open-add
+                                     {:name (:name p) :arg-types (:argTypes p)
+                                      :role :subject})}
+                  (:name p) "/" (count (:argTypes p))])
+               (when (empty? unseen-preds)
+                 [:span.dim {:style {:padding "4px 0"}}
+                  "All declared predicates already have facts for this entity."])]
+              (when-let [{:keys [name arg-types role]} open-add]
+                [:div.add-inline
+                 [:div.role-toggle
+                  [:button {:class (when (= role :subject) "active")
+                            :on-click #(swap! ui-state assoc-in [:open-add :role] :subject)}
+                   "as subject"]
+                  [:button {:class (when (= role :object) "active")
+                            :on-click #(swap! ui-state assoc-in [:open-add :role] :object)}
+                   "as object"]
+                  [:button.ghost {:on-click #(swap! ui-state assoc :open-add nil)} "Cancel"]]
+                 [entity-add-form domain-id e (keyword name) role arg-types]])]))]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Modal
