@@ -472,6 +472,16 @@ a.atom-link:hover {
 .rule-clause .var { color: var(--accent-2); font-weight: 500; }
 .rule-clause .dot { color: var(--muted); }
 .hint { margin-top: 18px; color: var(--muted); font-size: 12px; }
+.hint code { background: var(--panel-2); padding: 1px 6px; border-radius: 3px; }
+
+/* arity-1 predicate view */
+.unary-list { display: flex; flex-direction: column; gap: 2px; max-width: 480px; }
+.unary-entry {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-bottom: 1px solid var(--border);
+  font-family: var(--code-font); font-size: 14px;
+}
+.unary-entry .icon { color: var(--accent-2); }
 
 /* entity view */
 .entity-hero {
