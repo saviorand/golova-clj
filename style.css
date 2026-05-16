@@ -496,6 +496,9 @@ a.atom-link:hover {
 }
 .entity-hero .title { font-size: 30px; font-weight: 700; }
 .entity-hero .subtitle { color: var(--muted); font-size: 12px; }
+.entity-controls { margin-left: auto; }
+.entity-controls button { font-size: 11px; color: var(--muted); }
+.tiny-hint { color: var(--dim); font-weight: 400; font-size: 11px; }
 
 .relation-group { margin: 20px 0 24px; }
 .relation-group .rel-attr {
