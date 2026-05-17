@@ -2,8 +2,10 @@
   "Reagent views for Golova. Each top-level surface is a function returning
   hiccup; the active one is chosen by `:selection` in app-state."
   (:require [clojure.string :as str]
+            [cljs.reader :as reader]
+            [cljs.pprint]
             [reagent.core :as r]
-            [naga.store :as nstore]
+            [datahike.core :as d]
             [golova.state :as state :refer [app-state]]
             [golova.storage :as storage]))
 
@@ -118,27 +120,15 @@
 ;; ---------------------------------------------------------------------------
 ;; Predicate / type / rule extraction from a domain
 
-(def ^:private type-tag-attrs
-  "Attributes Naga / Pabu use to encode arity-1 predicates as triples.
-  A fact like `loved(dune).` becomes [dune :rdf/type :loved] under the hood."
-  #{"type"})
-
-(defn- type-tag-triple? [[_ a _]]
-  (and (keyword? a) (contains? type-tag-attrs (name a))))
-
 (defn- domain-predicates
   "Return seq of {:name k :arity n :facts [...]} for every user-visible
-  attribute in the domain's store. Arity-1 predicates (encoded as
-  `:rdf/type` triples) are surfaced as separate entries named for the tag."
+  attribute in the domain's store. Datahike-native: there are no arity-1
+  type-tag tricks; everything is arity-2 EAV."
   [domain]
-  (let [store (:store domain)
-        triples (when store
-                  (try (nstore/resolve-pattern store '[?e ?a ?v]) (catch :default _ [])))
-        type-tags (filter type-tag-triple? triples)
-        regular   (remove type-tag-triple? triples)
-        own-attrs (->> regular (map second) (filter keyword?) distinct)
-        declared  (set (map :name (get-in domain [:schema :predicates])))
-        unary-names (->> type-tags (map #(nth % 2)) (filter keyword?) distinct)]
+  (let [domain-id (:id domain)
+        triples (state/all-triples domain-id)
+        own-attrs (->> triples (map second) (filter keyword?) distinct)
+        declared (set (map :name (get-in domain [:schema :predicates])))]
     (concat
      ;; declared predicates (always shown, even with zero facts)
      (for [p (get-in domain [:schema :predicates])]
@@ -147,45 +137,29 @@
         :arg-types (:argTypes p)
         :declared? true
         :facts (vec (filter #(= (keyword (:name p)) (second %)) triples))})
-     ;; discovered arity-2+ predicates
+     ;; discovered predicates (asserted via UI without prior declaration)
      (for [a own-attrs
            :when (not (contains? declared (name a)))]
        {:name (name a)
         :namespace (namespace a)
         :arity 2
         :declared? false
-        :facts (vec (filter #(= a (second %)) triples))})
-     ;; arity-1 unary predicates (encoded as :type tags)
-     (for [n unary-names]
-       {:name (name n)
-        :arity 1
-        :unary? true
-        :declared? false
-        :facts (vec (filter #(= n (nth % 2)) type-tags))}))))
+        :facts (vec (filter #(= a (second %)) triples))}))))
 
 (defn- domain-rules
-  "Return seq of {:name n :arity a :clauses [rule …]} per rule-head, grouped
-  so that multi-clause rules (e.g. base + recursive ancestor) appear as one
-  sidebar entry. Arity is user-visible. Rules with type-tag heads (encoded
-  arity-1 predicates) are surfaced as arity-1."
+  "Return seq of {:name n :arity a :clauses [rule …]} per rule head.
+  Datahike rules look like `[(head-name ?a ?b) body…]`; we group by head
+  name + arity so multi-clause rules (e.g. ancestor base + recursive)
+  appear as one sidebar entry."
   [domain]
   (->> (:rules domain)
        (keep (fn [r]
-               (let [head (first (:head r))
-                     n (count head)]
-                 (cond
-                   (< n 2) nil
-                   ;; Arity-1 encoded as [?x :type :user-pred]
-                   (and (= n 3)
-                        (keyword? (second head))
-                        (contains? type-tag-attrs (name (second head)))
-                        (keyword? (nth head 2)))
-                   {:name (name (nth head 2)) :arity 1 :rule r}
-                   ;; Regular arity-2+ rule [?x :pred ?y]
-                   (keyword? (second head))
-                   {:name  (name (second head))
-                    :arity (max 0 (dec n))
-                    :rule  r}))))
+               (when (and (vector? r) (seq r))
+                 (let [head (first r)]
+                   (when (and (seq? head) (symbol? (first head)))
+                     {:name (str (first head))
+                      :arity (count (rest head))
+                      :rule r})))))
        (group-by (juxt :name :arity))
        (map (fn [[[nm ar] clauses]]
               {:name nm :arity ar :clauses (mapv :rule clauses)}))
@@ -370,11 +344,11 @@
                 :on-click #(do (state/switch-domain! id)
                                (state/select! {:kind :query :name (:name q)}))}])
             [nav-item
-             {:active? (and active-domain? (= :scratch (:kind selection)))
-              :icon "✎"
-              :label "Scratch"
+             {:active? (and active-domain? (= :rules (:kind selection)))
+              :icon "ƒ"
+              :label "Rules / facts"
               :on-click #(do (state/switch-domain! id)
-                             (state/select! {:kind :scratch}))}]])])]
+                             (state/select! {:kind :rules}))}]])])]
 
      ;; footer
      [:div.sidebar-footer
@@ -392,125 +366,86 @@
       [:div.kshort [:span.lbl "Rebuild"] [:kbd "⌘↵"]]]]))
 
 ;; ---------------------------------------------------------------------------
-;; Scratch (program editor)
+;; Rules editor
 
-(def ^:private scratch-ta-id "scratch-ta")
+(defn- rules->text
+  "Pretty-print a domain's rules vector as EDN, one rule per blank-separated
+  block. Each rule is `[(head ?a ?b) [?a :attr ?b] …]`."
+  [rules]
+  (str/join "\n\n"
+            (for [r (or rules [])]
+              (with-out-str (cljs.pprint/pprint r)))))
 
-(defn- slash-anchor
-  "Compute a screen anchor for the slash popover from the textarea + cursor.
-  Approximate — assumes the monospace font from `--code-font` at 13.5px."
-  [ta pos]
-  (let [r          (.getBoundingClientRect ta)
-        v          (.-value ta)
-        before     (subs v 0 pos)
-        lines      (str/split before #"\n" -1)
-        row        (dec (count lines))
-        col        (count (last lines))
-        line-h     21
-        char-w     8.1
-        pad        12
-        scroll-top (.-scrollTop ta)]
-    {:left (+ (.-left r) pad (* col char-w))
-     :top  (+ (.-top r) pad (- (* (inc row) line-h) scroll-top))}))
+(defn- text->rules
+  "Parse the editor's text back into a rule vector. We wrap in [ ] and read
+  as EDN so the user can write rules separated by whitespace."
+  [text]
+  (let [wrapped (str "[" text "]")]
+    (vec (reader/read-string wrapped))))
 
-(defn- open-slash-menu! [ta local]
-  (let [pos (.-selectionStart ta)
-        v (.-value ta)
-        at-start (or (zero? pos) (= "\n" (.charAt v (dec pos))))]
-    (when at-start
-      (swap! app-state assoc :popover
-             {:kind :slash
-              :anchor (slash-anchor ta pos)
-              :ta-id scratch-ta-id
-              :local local
-              :slash-pos pos})
-      true)))
-
-(defn- insert-slash-template! [tpl-key]
-  (let [{:keys [local slash-pos ta-id]} (:popover @app-state)
-        ;; [template, select-start-rel, select-end-rel]
-        tpls {:fact    ["predicate(arg1, arg2).\n" 0 9]
-              :rule    ["head(X, Y) :- body(X, Y).\n" 0 4]
-              :comment ["% comment\n" 2 9]
-              :heading ["%% -- SECTION --\n" 5 14]}
-        [tpl ss se] (get tpls tpl-key)
-        v (:text @local)
-        new-v (str (subs v 0 slash-pos) tpl (subs v slash-pos))]
-    (swap! local assoc :text new-v :saved? false)
-    (close-popover!)
-    (js/setTimeout
-     (fn []
-       (when-let [ta (.getElementById js/document ta-id)]
-         (.focus ta)
-         (set! (.-selectionStart ta) (+ slash-pos ss))
-         (set! (.-selectionEnd   ta) (+ slash-pos se))))
-     20)))
-
-(defn scratch-view []
+(defn rules-view []
   (let [{:keys [current-domain]} @app-state
-        domain (state/current)
-        local (r/atom {:text (:program-text domain) :saved? true :err nil})]
+        d (state/current)
+        initial (rules->text (:rules d))
+        local (r/atom {:text initial :loaded current-domain
+                       :saved? true :err nil})]
     (fn []
-      (let [d (state/current)
-            current-text (:program-text d)
+      (let [domain-id (state/current-id)
+            d (state/current)
+            current-text (rules->text (:rules d))
             err (:build-error d)]
-        ;; if external program-text changed (e.g. domain switch), reset local
-        (when (not= current-text (:loaded @local))
-          (reset! local {:text current-text :loaded current-text :saved? true :err nil}))
+        (when (not= domain-id (:loaded @local))
+          (reset! local {:text current-text :loaded domain-id
+                         :saved? true :err nil}))
         [:div.view
          [:div.view-head
-          [:h2 "Scratch"]
-          [:span.desc "Edit the Naga program for "
-           [:b (:label d)] ". Facts and rules are the source of truth."
-           [:span.kbd-hint "  · type "
-            [:kbd "/"] " at the start of a line for templates"]]
+          [:h2 "Rules"]
+          [:span.desc "Datalog rules for "
+           [:b (:label d)] ". Each rule is "
+           [:code "[(head ?a ?b) body…]"]
+           ". Edit and rebuild."]
           [:div.actions-right
            [:button.primary
             {:on-click (fn []
-                         (state/set-program! current-domain (:text @local))
-                         (swap! local assoc :saved? true))}
-            "Rebuild"]]]
-         [:div.program-editor {:class (cond err "err"
+                         (try
+                           (let [parsed (text->rules (:text @local))]
+                             (state/set-rules! domain-id parsed)
+                             (swap! local assoc :saved? true :err nil))
+                           (catch :default e
+                             (swap! local assoc :err (.-message e)))))}
+            "Save rules"]]]
+         [:div.program-editor {:class (cond (or err (:err @local)) "err"
                                             (not (:saved? @local)) "dirty")}
           [:textarea
-           {:id scratch-ta-id
-            :spellCheck "false"
+           {:spellCheck "false"
             :value (:text @local)
-            :on-change #(swap! local assoc :text (.. % -target -value) :saved? false)
+            :on-change #(swap! local assoc :text (.. % -target -value)
+                               :saved? false :err nil)
             :on-key-down (fn [e]
-                           (cond
-                             (and (or (.-metaKey e) (.-ctrlKey e))
-                                  (= "Enter" (.-key e)))
-                             (do (.preventDefault e)
-                                 (state/set-program! current-domain (:text @local))
-                                 (swap! local assoc :saved? true))
-
-                             (and (= "/" (.-key e))
-                                  (not (.-metaKey e))
-                                  (not (.-ctrlKey e))
-                                  (not (.-altKey e)))
-                             (when (open-slash-menu! (.-target e) local)
-                               (.preventDefault e))))}]
+                           (when (and (or (.-metaKey e) (.-ctrlKey e))
+                                      (= "Enter" (.-key e)))
+                             (.preventDefault e)
+                             (try
+                               (let [parsed (text->rules (:text @local))]
+                                 (state/set-rules! domain-id parsed)
+                                 (swap! local assoc :saved? true :err nil))
+                               (catch :default ex
+                                 (swap! local assoc :err (.-message ex))))))}]
           [:div.footer
-           [:span.status {:class (cond err "err"
+           [:span.status {:class (cond (or err (:err @local)) "err"
                                        (:saved? @local) "ok"
                                        :else "dirty")}
-            (cond err (str "build error: " err)
+            (cond (or err (:err @local)) (str "error: " (or err (:err @local)))
                   (:saved? @local) "saved"
-                  :else "edited — press Rebuild")]]]
-         (when (:store d)
-           (let [triples (state/all-triples current-domain)
+                  :else "edited — press Save (or ⌘↵)")]]]
+         ;; Stored triples
+         (when (:db d)
+           (let [triples (state/all-triples domain-id)
                  total (count triples)
-                 shown (take 200 triples)
-                 retract!
-                 (fn [tr prov]
-                   (let [warn (when (= prov :program)
-                                "This fact is in the program text. Retracting only adds an event that suppresses it on rebuild — if you edit the program later, the same fact may reappear.\n\nContinue?")]
-                     (when (or (not warn) (js/confirm warn))
-                       (state/retract-triple! current-domain (vec tr)))))]
+                 shown (take 200 triples)]
              [:div {:style {:margin-top "24px"}}
               [:h3.materialized-h
-               "Materialized triples"
+               "Stored facts"
                [:span.count-hint total " total"
                 (when (> total 200) (str " · showing first 200"))]]
               [:table.facts
@@ -518,7 +453,7 @@
                         [:th "source"] [:th ""]]]
                [:tbody
                 (for [[i [e a v :as tr]] (map-indexed vector shown)]
-                  (let [prov (state/triple-provenance current-domain tr)]
+                  (let [prov (state/triple-provenance domain-id tr)]
                     ^{:key i}
                     [:tr
                      [:td (atom-link e)]
@@ -526,13 +461,11 @@
                      [:td (atom-link v)]
                      [:td [:span.pill {:class (str "prov-" (name prov))} (name prov)]]
                      [:td.delete
-                      (when (not= :derived prov)
+                      (when (= :event prov)
                         [:button.ghost.danger
-                         {:title (case prov
-                                   :event "Retract this event"
-                                   :imported "Retract imported triple"
-                                   :program "Suppress this program axiom")
-                          :on-click #(retract! tr prov)} "×"])]]))]]]))]))))
+                         {:title "Retract this fact"
+                          :on-click #(state/retract-triple! domain-id (vec tr))}
+                         "×"])]]))]]]))]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Predicate table view
@@ -645,104 +578,72 @@
                           {:kind :move-to :src src-id :mover mover} e))}
      "in " [:b label] " ▾"]))
 
-(defn- unary-predicate-view
-  "Arity-1 predicates (encoded as :rdf/type tags). Show entities in a list,
-  no add-row (asserting requires a separate UX since the underlying assertion
-  is [?x :rdf/type :name])."
-  [domain-id pred-name]
-  (let [tag (keyword pred-name)
-        all (state/all-triples domain-id)
-        my (filter (fn [tr] (and (type-tag-triple? tr)
-                                 (= tag (nth tr 2))))
-                   all)]
+(defn predicate-view [name arity]
+  (let [domain-id (state/current-id)
+        d (state/current)
+        attr (keyword name)
+        triples (filter #(= attr (second %)) (state/all-triples domain-id))
+        declared (first (filter #(and (= name (:name %))
+                                      (= arity (count (:argTypes %))))
+                                (get-in d [:schema :predicates])))
+        arg-types (when declared (:argTypes declared))]
     [:div.view
      [:div.view-head
-      [:h2.mono (str pred-name "/1")]
-      [:span.desc (count my) " entit" (if (= 1 (count my)) "y" "ies")]
-      [:span.pill "unary (derived)"]]
-     (if (empty? my)
-       [:div.empty
-        [:div "No entities have been derived for " [:b pred-name] " yet."]
-        [:div {:style {:margin-top "8px" :color "var(--dim)"}}
-         "Arity-1 predicates are produced by rules with single-arg heads."]]
-       [:div.unary-list
-        (for [[i [e _ _]] (map-indexed vector my)]
-          ^{:key i}
-          [:div.unary-entry
-           [:span.icon "◇"]
-           (atom-link e)])])
-     [:div.hint
-      "This is a category (arity-1 predicate). Stored under "
-      [:code "rdf/type"] " in the triple store."]]))
-
-(defn predicate-view [name arity]
-  (if (= 1 arity)
-    [unary-predicate-view (state/current-id) name]
-    (let [domain-id (state/current-id)
-          d (state/current)
-          attr (keyword name)
-          triples (filter #(= attr (second %)) (state/all-triples domain-id))
-          declared (first (filter #(and (= name (:name %))
-                                        (= arity (count (:argTypes %))))
-                                  (get-in d [:schema :predicates])))
-          arg-types (when declared (:argTypes declared))]
-      [:div.view
-       [:div.view-head
-        [:h2.mono (str name "/" arity)]
-        [:span.desc (count triples) " fact" (when (not= 1 (count triples)) "s")]
+      [:h2.mono (str name "/" arity)]
+      [:span.desc (count triples) " fact" (when (not= 1 (count triples)) "s")]
+      (if declared
+        [:span.pill.declared "declared"]
+        [:span.pill "discovered"])
+      [move-to-pill domain-id
+       (fn [src dst] (state/move-predicate! src dst name arity))]
+      [:div.actions-right
+       (when declared
+         [:button.ghost.danger
+          {:on-click (fn []
+                       (when (js/confirm
+                              (str "Delete predicate declaration " name "/" arity
+                                   "?\nFacts are not deleted."))
+                         (state/delete-predicate! domain-id name arity)
+                         (state/select! {:kind :rules})))}
+          "Delete declaration"])]]
+     [:table.facts
+      [:thead
+       [:tr
         (if declared
-          [:span.pill.declared "declared"]
-          [:span.pill "discovered"])
-        [move-to-pill domain-id
-         (fn [src dst] (state/move-predicate! src dst name arity))]
-        [:div.actions-right
-         (when declared
-           [:button.ghost.danger
-            {:on-click (fn []
-                         (when (js/confirm
-                                (str "Delete predicate declaration " name "/" arity
-                                     "?\nFacts are not deleted."))
-                           (state/delete-predicate! domain-id name arity)
-                           (state/select! {:kind :scratch})))}
-            "Delete declaration"])]]
-       [:table.facts
-        [:thead
-         [:tr
-          (if declared
-            (for [[i t] (map-indexed vector arg-types)]
-              ^{:key i}
-              [:th [:div.h
-                    [:span.type-icon {:title t} (type-icon-for t)]
-                    [:span t]]])
-            [:<> [:th [:div.h [:span.type-icon "◇"] [:span "subject"]]]
-                 [:th [:div.h [:span.type-icon "◇"] [:span "object"]]]])
-          [:th ""]]]
-        [:tbody
-         (if (empty? triples)
-           [:tr [:td {:col-span (inc (or (count arg-types) 2))
-                      :style {:padding "24px" :text-align "center" :color "var(--muted)"
-                              :font-family "var(--sans-font)"}}
-                 "No facts yet — use the row below to add one."]]
-           (for [[i tr] (map-indexed vector triples)]
-             ^{:key (pr-str tr)}
-             [pred-edit-row domain-id (or arg-types []) tr]))]
-        (let [effective-types (or arg-types ["atom" "atom"])]
-          (when (= 2 (count effective-types))
-            [:tfoot
-             [pred-add-row domain-id name effective-types]]))]
-       (when-not declared
-         [:div.declare-hint
-          "This predicate isn't declared. "
-          [:a.atom-link
-           {:on-click #(state/open-modal! {:kind :new-predicate
-                                            :preset-name name
-                                            :domain domain-id})}
-           "Declare types"] " to get a typed table with dropdowns."])
-       (when (and declared (not= 2 (count arg-types)))
-         [:div.declare-hint
-          "Add-row form only supports arity-2 predicates today. "
-          [:span {:style {:color "var(--dim)"}}
-           "(Arity " (count arg-types) " requires entity reification.)"]])])))
+          (for [[i t] (map-indexed vector arg-types)]
+            ^{:key i}
+            [:th [:div.h
+                  [:span.type-icon {:title t} (type-icon-for t)]
+                  [:span t]]])
+          [:<> [:th [:div.h [:span.type-icon "◇"] [:span "subject"]]]
+               [:th [:div.h [:span.type-icon "◇"] [:span "object"]]]])
+        [:th ""]]]
+      [:tbody
+       (if (empty? triples)
+         [:tr [:td {:col-span (inc (or (count arg-types) 2))
+                    :style {:padding "24px" :text-align "center" :color "var(--muted)"
+                            :font-family "var(--sans-font)"}}
+               "No facts yet — use the row below to add one."]]
+         (for [[i tr] (map-indexed vector triples)]
+           ^{:key (pr-str tr)}
+           [pred-edit-row domain-id (or arg-types []) tr]))]
+      (let [effective-types (or arg-types ["atom" "atom"])]
+        (when (= 2 (count effective-types))
+          [:tfoot
+           [pred-add-row domain-id name effective-types]]))]
+     (when-not declared
+       [:div.declare-hint
+        "This predicate isn't declared. "
+        [:a.atom-link
+         {:on-click #(state/open-modal! {:kind :new-predicate
+                                          :preset-name name
+                                          :domain domain-id})}
+         "Declare types"] " to get a typed table with dropdowns."])
+     (when (and declared (not= 2 (count arg-types)))
+       [:div.declare-hint
+        "Add-row form only supports arity-2 predicates today. "
+        [:span {:style {:color "var(--dim)"}}
+         "(Arity " (count arg-types) " requires entity reification.)"]])]))
 
 ;; ---------------------------------------------------------------------------
 ;; Type view
@@ -771,7 +672,7 @@
               {:on-click (fn []
                            (when (js/confirm (str "Delete type " name "?"))
                              (state/delete-type! domain-id name)
-                             (state/select! {:kind :scratch})))}
+                             (state/select! {:kind :rules})))}
               "Delete type"]]]
            [:div.constructor-list
             (for [c (:constructors t)]
@@ -795,56 +696,51 @@
 ;; ---------------------------------------------------------------------------
 ;; Rule view
 
-;; --- Rule pretty-printing (Naga structs → Pabu-ish text) -------------------
+;; --- Rule pretty-printing (Datahike rule shape) ----------------------------
 
 (defn- fmt-rule-arg [v]
   (cond
     (symbol? v)  (str v)
     (keyword? v) (fmt-val v)
     (string? v)  (str "\"" v "\"")
+    (vector? v)  (pr-str v)
     :else        (str v)))
 
-(defn- fmt-pred-name [a]
-  (if (keyword? a)
-    (if-let [n (namespace a)] (str n "." (name a)) (name a))
-    (str a)))
+(defn- fmt-head [head]
+  ;; head: a list like (ancestor ?a ?b)
+  (let [hname (first head)
+        args (rest head)]
+    (str hname "(" (str/join ", " (map fmt-rule-arg args)) ")")))
 
-(defn- fmt-rule-pattern [p]
+(defn- fmt-where-clause [c]
   (cond
-    (and (vector? p) (= 3 (count p))
-         (keyword? (second p))
-         (contains? type-tag-attrs (name (second p)))
-         (keyword? (nth p 2)))
-    ;; Arity-1 unary predicate: [?x :rdf/type :loved] => loved(?x)
-    (let [[e _ v] p]
-      (str (name v) "(" (fmt-rule-arg e) ")"))
-    (vector? p)
-    (let [[e a v] p]
-      (str (fmt-pred-name a) "(" (fmt-rule-arg e) ", " (fmt-rule-arg v) ")"))
-    :else (pr-str p)))
-
-(defn- fmt-rule
-  "Format a Naga rule record as readable Pabu-ish text."
-  [r]
-  (let [head (str/join ", " (map fmt-rule-pattern (:head r)))
-        body (str/join ", " (map fmt-rule-pattern (:body r)))]
-    (str head " :- " body ".")))
+    ;; pattern: [?e :attr ?v] or [?e :attr value]
+    (vector? c)
+    (let [[e a v & more] c]
+      (if (and (keyword? a) (nil? more))
+        (str (fmt-rule-arg e) " " (fmt-val a) " " (fmt-rule-arg v))
+        (pr-str c)))
+    ;; rule invocation: (ancestor ?a ?b)
+    (seq? c)
+    (str (first c) "(" (str/join ", " (map fmt-rule-arg (rest c))) ")")
+    :else (pr-str c)))
 
 (defn- rule-clause [r]
-  (letfn [(hl-args [s]
-            ;; render `?x` variables in accent color by splitting on whitespace
-            ;; and emitting spans
-            (let [parts (re-seq #"\?[A-Za-z][A-Za-z0-9_]*|[^?]+|\?" s)]
-              (for [[i p] (map-indexed vector parts)]
-                (if (and (> (count p) 1) (= "?" (subs p 0 1)))
-                  ^{:key i} [:span.var p]
-                  ^{:key i} [:span p]))))]
-    (let [head-str (str/join ", " (map fmt-rule-pattern (:head r)))
-          body-str (str/join ", " (map fmt-rule-pattern (:body r)))]
-      [:div.rule-clause
-       [:div.rule-head (hl-args head-str)]
-       [:div.rule-arrow ":-"]
-       [:div.rule-body (hl-args body-str) [:span.dot "."]]])))
+  ;; r looks like [(head ?a ?b) <body-clause>+ ]
+  (let [head (first r)
+        body (rest r)
+        head-str (fmt-head head)
+        body-str (str/join ",  " (map fmt-where-clause body))
+        hl-args (fn [s]
+                  (let [parts (re-seq #"\?[A-Za-z][A-Za-z0-9_]*|[^?]+|\?" s)]
+                    (for [[i p] (map-indexed vector parts)]
+                      (if (and (> (count p) 1) (= "?" (subs p 0 1)))
+                        ^{:key i} [:span.var p]
+                        ^{:key i} [:span p]))))]
+    [:div.rule-clause
+     [:div.rule-head (hl-args head-str)]
+     [:div.rule-arrow ":-"]
+     [:div.rule-body (hl-args body-str) [:span.dot "."]]]))
 
 (defn rule-view [name]
   (let [d (state/current)
@@ -858,14 +754,14 @@
       [:span.pill.derived "derived"]
       [:div.actions-right
        [:button
-        {:on-click #(state/select! {:kind :scratch})}
-        "Edit in Scratch"]]]
+        {:on-click #(state/select! {:kind :rules})}
+        "Edit in Rules"]]]
      (for [[i r] (map-indexed vector clauses)]
        ^{:key i}
        [:div.rule-card
         [rule-clause r]])
      [:div.hint
-      "Rules are defined in the domain's Scratch (program text). Edit there to change."]]))
+      "Rules live in the domain's Rules editor. Edit there to change."]]))
 
 ;; ---------------------------------------------------------------------------
 ;; Query view (saved query)
@@ -895,7 +791,7 @@
               {:on-click (fn []
                            (when (js/confirm (str "Delete saved query " (:name q) "?"))
                              (state/delete-query! domain-id (:name q))
-                             (state/select! {:kind :scratch})))} "Delete"]]]
+                             (state/select! {:kind :rules})))} "Delete"]]]
            [:div.program-editor
             [:textarea {:value (:text @local)
                         :on-change #(swap! local assoc :text (.. % -target -value))
@@ -1177,24 +1073,28 @@
           :new-rule
           [:<>
            [:h3 "New rule"]
-           [:div.modal-sub "Appended to the domain's program text."]
-           [text-field {:label "Rule (Naga / Pabu syntax)" :id "rule-text"
-                        :placeholder "head(X, Y) :- body1(X), body2(Y)."
+           [:div.modal-sub "Datalog rule. Format: "
+            [:code "[(head ?a ?b) body…]"]]
+           [text-field {:label "Rule (EDN)" :id "rule-text"
+                        :placeholder "[(ancestor ?a ?d) [?a :parent ?d]]"
                         :rows 4}]
            [:div.modal-actions
             [:button {:on-click state/close-modal!} "Cancel"]
             [:button.primary
              {:on-click (fn []
-                          (let [rule (read-field "rule-text")
-                                d (get-in @app-state [:domains (:domain m)])
-                                current (:program-text d)
-                                joined (if (str/blank? current)
-                                         (str rule "\n")
-                                         (str (str/trimr current) "\n" rule "\n"))]
-                            (when (seq rule)
-                              (state/set-program! (:domain m) joined)
-                              (state/select! {:kind :scratch}))
-                            (state/close-modal!)))}
+                          (try
+                            (let [rule-text (read-field "rule-text")
+                                  parsed (when (seq rule-text)
+                                           (reader/read-string rule-text))
+                                  d (get-in @app-state [:domains (:domain m)])
+                                  rules (vec (:rules d))
+                                  new-rules (conj rules parsed)]
+                              (when parsed
+                                (state/set-rules! (:domain m) new-rules)
+                                (state/select! {:kind :rules}))
+                              (state/close-modal!))
+                            (catch :default ex
+                              (js/alert (str "Bad rule: " (.-message ex))))))}
              "Append rule"]]]
 
           :new-query
@@ -1289,15 +1189,13 @@
 ;; Command palette (Cmd-K).
 
 (defn- domain-entities
-  "Set of keyword entities in a domain's store + type constructors."
+  "Set of keyword entities in a domain's db + type constructors."
   [d]
-  (let [store (:store d)
-        in-store (when store
-                   (->> (try (nstore/resolve-pattern store '[?e ?a ?v])
-                             (catch :default _ []))
-                        (mapcat (fn [[e _ v]] [e v]))
-                        (filter keyword?)
-                        set))
+  (let [triples (state/all-triples (:id d))
+        in-store (->> triples
+                      (mapcat (fn [[e _ v]] [e v]))
+                      (filter keyword?)
+                      set)
         ctors (->> (get-in d [:schema :types])
                    (mapcat (fn [t] (map keyword (:constructors t))))
                    set)]
@@ -1327,8 +1225,8 @@
          :run (modal {:kind :new-rule :domain cur-id})}
         {:kind :cmd :label (str "Save query in " (:label d) "…") :icon "?"
          :run (modal {:kind :new-query :domain cur-id})}
-        {:kind :cmd :label (str "Open scratch for " (:label d)) :icon "✎"
-         :run (nav {:kind :scratch})}])
+        {:kind :cmd :label (str "Open rules for " (:label d)) :icon "ƒ"
+         :run (nav {:kind :rules})}])
      ;; Domains
      (for [[id dd] (sort-by (comp str first) doms)]
        {:kind :domain :label (:label dd) :sublabel "domain" :icon "□"
@@ -1479,27 +1377,6 @@
                              (state/delete-domain! (:domain p)))))}
             [:span.k "⌫"] " Delete domain"]]]
 
-         :slash
-         [popover-shell (:anchor p)
-          [:div.popover-card.slash
-           [:div.popover-title "Insert"]
-           [:button.popover-item
-            {:on-click #(insert-slash-template! :fact)}
-            [:span.k "·"] " Fact "
-            [:span.cmd-hint "predicate(a, b)."]]
-           [:button.popover-item
-            {:on-click #(insert-slash-template! :rule)}
-            [:span.k "ƒ"] " Rule "
-            [:span.cmd-hint "head :- body."]]
-           [:button.popover-item
-            {:on-click #(insert-slash-template! :comment)}
-            [:span.k "%"] " Comment "
-            [:span.cmd-hint "% comment"]]
-           [:button.popover-item
-            {:on-click #(insert-slash-template! :heading)}
-            [:span.k "§"] " Section heading "
-            [:span.cmd-hint "%% -- SECTION --"]]]]
-
          :move-to
          (let [{:keys [src mover]} p
                others (filter #(not= src (first %)) (:domains @app-state))]
@@ -1541,7 +1418,7 @@
         :rule      [rule-view (:name sel)]
         :query     [query-view (:name sel)]
         :entity    [entity-view (:name sel)]
-        [scratch-view]))))
+        [rules-view]))))
 
 (defn root []
   [:<>
