@@ -457,7 +457,7 @@ a.atom-link:hover {
 }
 .palette-foot kbd { margin-right: 4px; }
 
-/* predicate-page "Used in rules" section */
+/* predicate-page "Defined by" / "Used in rules" sections */
 .used-in { margin-top: 28px; padding-top: 18px; border-top: 1px solid var(--border); }
 .used-in .used-in-card { margin-bottom: 10px; }
 .used-in .used-in-head {
@@ -465,6 +465,9 @@ a.atom-link:hover {
   color: var(--muted); margin-bottom: 4px;
 }
 .used-in .rule-card.compact { padding: 10px 14px; margin-bottom: 0; }
+.used-in .section-hint {
+  color: var(--dim); font-size: 12px; margin: -4px 0 10px;
+}
 
 /* predicate link (inline, in tables) — derived from atom-link but the
    underline color is the accent-2 to distinguish from entity navigation. */

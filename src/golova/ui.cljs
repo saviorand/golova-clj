@@ -824,6 +824,20 @@
                          :else false))
                      body)))))))
 
+(defn- rules-defining-attr
+  "Return rules whose head produces facts under `attr`. For an arity-2
+  rule head `(parent ?a ?b)` we materialise into `[?a :parent ?b]`; for
+  arity-1 `(loved ?b)` we materialise into `[?b :loved true]` — both end
+  up as the same `:attr` in the store."
+  [domain attr]
+  (let [attr-sym (symbol (clojure.core/name attr))]
+    (->> (:rules domain)
+         (filter
+           (fn [rule]
+             (let [head (first rule)]
+               (and (seq? head) (symbol? (first head))
+                    (= attr-sym (first head)))))))))
+
 (defn predicate-view [name arity]
   (let [domain-id (state/current-id)
         d (state/current)
@@ -833,6 +847,7 @@
                                       (= arity (count (:argTypes %))))
                                 (get-in d [:schema :predicates])))
         arg-types (when declared (:argTypes declared))
+        defining-rules (rules-defining-attr d attr)
         using-rules (rules-using-attr d attr)]
     [:div.view
      [:div.view-head
@@ -891,9 +906,30 @@
         "Add-row form only supports arity-2 predicates today. "
         [:span {:style {:color "var(--dim)"}}
          "(Arity " (count arg-types) " requires entity reification.)"]])
+     (when (seq defining-rules)
+       [:div.used-in
+        [:h3.section-h "Defined by"]
+        [:div.section-hint
+         "These rules produce facts under "
+         [:code (str ":" name)] " when the engine materialises derivations."]
+        (for [[i r] (map-indexed vector defining-rules)
+              :let [head (first r)
+                    head-name (clojure.core/name (first head))
+                    head-arity (count (rest head))]]
+          ^{:key i}
+          [:div.used-in-card
+           [:div.used-in-head
+            [:a.atom-link
+             {:on-click #(state/select! {:kind :rule :name head-name})}
+             head-name "/" head-arity]]
+           [:div.rule-card.compact
+            [rule-clause r]]])])
      (when (seq using-rules)
        [:div.used-in
         [:h3.section-h "Used in rules"]
+        [:div.section-hint
+         "These rules reference "
+         [:code (str ":" name)] " in their body — they're consumers."]
         (for [[i r] (map-indexed vector using-rules)
               :let [head (first r)
                     head-name (when (and (seq? head) (symbol? (first head)))
