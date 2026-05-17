@@ -705,6 +705,27 @@
   (let [db (get-in @app-state [:domains domain-id :db])]
     (some-> db (d/datoms :eavt entity :note) first :v)))
 
+(defn all-atom-idents
+  "Sorted seq of every `:db/ident` keyword in this domain — useful for
+  suggestions when picking type constructors."
+  [domain-id]
+  (let [db (get-in @app-state [:domains domain-id :db])]
+    (when db
+      (->> (d/datoms db :aevt :db/ident)
+           (map :v)
+           sort))))
+
+(defn untyped-atoms
+  "Atom idents that aren't already a constructor of any declared type in
+  the domain — candidates to add when growing a type."
+  [domain-id]
+  (let [taken (->> (get-in @app-state [:domains domain-id :schema :types])
+                   (mapcat :constructors)
+                   (map keyword)
+                   set)]
+    (->> (all-atom-idents domain-id)
+         (remove taken))))
+
 (defn entities-with-notes
   "Return a sorted seq of entity keywords that have a non-empty :note."
   [domain-id]

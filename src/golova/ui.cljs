@@ -11,7 +11,7 @@
 
 (def ^:private result-row-cap 200)
 
-(declare atom-link rule-clause)
+(declare atom-link rule-clause sort-indicator cycle-sort)
 
 ;; ---------------------------------------------------------------------------
 ;; Tiny markdown renderer.
@@ -145,6 +145,153 @@
                                       :arity arity}))}
       (fmt-val attr)]
      [:span (str attr)])))
+
+;; ---------------------------------------------------------------------------
+;; Table toolbar (search + provenance filter + summary)
+
+(def ^:private provenance-colors
+  {:event    "prov-event"
+   :derived  "prov-derived"
+   :program  "prov-program"
+   :imported "prov-imported"})
+
+(defn- row-matches?
+  "Substring case-insensitive match across stringified row cells."
+  [query row]
+  (or (str/blank? query)
+      (let [q (str/lower-case query)
+            stringy (str/lower-case
+                     (str/join " "
+                               (map (fn [v]
+                                      (cond
+                                        (keyword? v) (str (when (namespace v)
+                                                           (str (namespace v) "/"))
+                                                          (name v))
+                                        (nil? v) ""
+                                        :else (str v)))
+                                    row)))]
+        (str/includes? stringy q))))
+
+(defn- sort-rows
+  "Sort rows by the given column index. `dir` is :asc, :desc, or nil."
+  [rows col dir]
+  (if-not (and col dir)
+    rows
+    (let [k (fn [r] (let [v (nth r col nil)]
+                      (cond
+                        (keyword? v) (str (namespace v) "/" (name v))
+                        :else (str v))))]
+      (vec ((if (= dir :desc) #(reverse (sort-by k %)) #(sort-by k %))
+            rows)))))
+
+(defn table-toolbar
+  "Renders a search input, provenance filter pills, and a row-count summary.
+  `state-atom` holds {:query string :provs #{kw}}. `provs-present` is the
+  set of provenance values seen in the unfiltered rows — only those show
+  up as pills. `total` and `shown` drive the summary text."
+  [{:keys [state-atom provs-present total shown]}]
+  (let [st @state-atom]
+    [:div.table-toolbar
+     [:input.tt-search
+      {:type "text"
+       :placeholder "Search rows…"
+       :value (:query st)
+       :on-change #(swap! state-atom assoc :query (.. % -target -value))}]
+     (when (seq provs-present)
+       [:div.tt-provs
+        (for [p [:event :derived :program :imported]
+              :when (provs-present p)]
+          ^{:key p}
+          [:button.prov-toggle
+           {:class (str (provenance-colors p)
+                        (when (contains? (:provs st) p) " on"))
+            :on-click #(swap! state-atom update :provs
+                              (fn [s] (let [s (or s #{})]
+                                        (if (contains? s p) (disj s p) (conj s p)))))}
+           (name p)])
+        (when (seq (:provs st))
+          [:button.prov-clear {:on-click #(swap! state-atom assoc :provs #{})}
+           "clear"])])
+     [:div.tt-summary
+      shown " of " total
+      (when (and (= shown 0) (pos? total))
+        " · no matches")]]))
+
+;; ---------------------------------------------------------------------------
+;; Type-aware value display
+
+(defn- type-of-value
+  "Return the declared-type name (string) for value `v` in this domain, or
+  nil. Iterates type defs to find one whose constructors include v."
+  [domain-id v]
+  (when (keyword? v)
+    (let [n (name v)]
+      (some (fn [t]
+              (when (some #{n} (:constructors t))
+                (:name t)))
+            (get-in @app-state [:domains domain-id :schema :types])))))
+
+(defn type-value
+  "Render a value with a small type-name pill prefix when the value is a
+  constructor of a declared type — gives bigger tables much more visual
+  scanning structure."
+  [domain-id v]
+  (if-let [tn (type-of-value domain-id v)]
+    [:span.type-value {:class (str "type-" tn)}
+     (atom-link v)]
+    (atom-link v)))
+
+(defn chip-editor
+  "Pill-based list editor. `state-atom` holds a vector of strings.
+  Enter / comma commits the current input. Backspace on empty input
+  deletes the last chip. If `suggestions-fn` is provided, it returns a
+  seq of strings to offer (filtered by the current input)."
+  [{:keys [state-atom placeholder suggestions-fn]}]
+  (let [input (r/atom "")
+        commit (fn [v]
+                 (let [v (str/trim (or v ""))]
+                   (when (and (seq v) (not (some #{v} @state-atom)))
+                     (swap! state-atom conj v)
+                     (reset! input ""))))]
+    (fn [{:keys [placeholder suggestions-fn]}]
+      (let [filtered-suggestions
+            (when suggestions-fn
+              (let [q (str/lower-case @input)
+                    taken (set @state-atom)]
+                (->> (suggestions-fn)
+                     (map name)
+                     (remove taken)
+                     (filter #(str/includes? (str/lower-case %) q))
+                     (take 12))))]
+        [:div.chip-editor
+         [:div.chip-list
+          (for [[i it] (map-indexed vector @state-atom)]
+            ^{:key (str i "-" it)}
+            [:span.chip
+             [:span.chip-text it]
+             [:button.chip-x
+              {:on-click #(swap! state-atom (fn [xs] (vec (remove #{it} xs))))
+               :title "Remove"} "×"]])
+          [:input.chip-input
+           {:value @input
+            :placeholder (or placeholder "Type and press Enter…")
+            :on-change #(reset! input (.. % -target -value))
+            :on-key-down (fn [e]
+                           (cond
+                             (or (= "Enter" (.-key e)) (= "," (.-key e)))
+                             (do (.preventDefault e) (commit @input))
+                             (and (= "Backspace" (.-key e))
+                                  (str/blank? @input)
+                                  (seq @state-atom))
+                             (swap! state-atom (fn [xs] (vec (drop-last xs))))))}]]
+         (when (seq filtered-suggestions)
+           [:div.chip-suggestions
+            [:span.cs-label "Suggest:"]
+            (for [s filtered-suggestions]
+              ^{:key s}
+              [:button.chip.suggest
+               {:on-click #(commit s)}
+               "+ " s])])]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Popover state. Anchored to a clicked element; rendered via the root.
@@ -614,7 +761,9 @@
         d (state/current)
         initial (rules->text (:rules d))
         local (r/atom {:text initial :loaded current-domain
-                       :saved? true :err nil})]
+                       :saved? true :err nil})
+        table-state (r/atom {:query "" :provs #{}
+                             :sort {:col-cur nil :dir nil}})]
     (fn []
       (let [domain-id (state/current-id)
             d (state/current)
@@ -667,31 +816,64 @@
          ;; Stored triples
          (when (:db d)
            (let [triples (state/all-triples domain-id)
-                 total (count triples)
-                 shown (take 200 triples)]
+                 rows (mapv (fn [[e a v :as tr]]
+                              {:e e :a a :v v :tr (vec tr)
+                               :prov (state/triple-provenance domain-id tr)})
+                            triples)
+                 provs-present (set (map :prov rows))
+                 {:keys [query provs sort]} @table-state
+                 filtered (filterv #(row-matches? query [(:e %) (:a %) (:v %)]) rows)
+                 filtered (if (seq provs)
+                            (filterv #(contains? provs (:prov %)) filtered)
+                            filtered)
+                 filtered (let [{:keys [col-cur dir]} sort]
+                            (if (and col-cur dir)
+                              (let [k (case col-cur 0 :e 1 :a 2 :v 3 :prov nil)]
+                                (if k
+                                  (vec ((if (= dir :desc) reverse identity)
+                                        (sort-by (comp str k) filtered)))
+                                  filtered))
+                              filtered))
+                 capped (take 200 filtered)
+                 sort-cur (:col-cur sort)
+                 sort-dir (:dir sort)
+                 header (fn [i label]
+                          [:th.sortable {:on-click #(cycle-sort table-state i)}
+                           label
+                           [:span.sort-arrow
+                            (when (= i sort-cur) (sort-indicator sort-dir))]])]
              [:div {:style {:margin-top "24px"}}
               [:h3.materialized-h
                "Stored facts"
-               [:span.count-hint total " total"
-                (when (> total 200) (str " · showing first 200"))]]
+               [:span.count-hint (count rows) " total"
+                (when (> (count filtered) 200) (str " · showing first 200 of "
+                                                    (count filtered)))]]
+              [table-toolbar
+               {:state-atom table-state
+                :provs-present provs-present
+                :total (count rows)
+                :shown (count filtered)}]
               [:table.facts
-               [:thead [:tr [:th "subject"] [:th "predicate"] [:th "object"]
-                        [:th "source"] [:th ""]]]
+               [:thead [:tr
+                        [header 0 "subject"]
+                        [header 1 "predicate"]
+                        [header 2 "object"]
+                        [header 3 "source"]
+                        [:th ""]]]
                [:tbody
-                (for [[i [e a v :as tr]] (map-indexed vector shown)]
-                  (let [prov (state/triple-provenance domain-id tr)]
-                    ^{:key i}
-                    [:tr
-                     [:td (atom-link e)]
-                     [:td [pred-link a]]
-                     [:td (atom-link v)]
-                     [:td [:span.pill {:class (str "prov-" (name prov))} (name prov)]]
-                     [:td.delete
-                      (when (= :event prov)
-                        [:button.ghost.danger
-                         {:title "Retract this fact"
-                          :on-click #(state/retract-triple! domain-id (vec tr))}
-                         "×"])]]))]]]))]))))
+                (for [{:keys [e a v tr prov]} capped]
+                  ^{:key (pr-str tr)}
+                  [:tr
+                   [:td (atom-link e)]
+                   [:td [pred-link a]]
+                   [:td [type-value domain-id v]]
+                   [:td [:span.pill {:class (str "prov-" (name prov))} (name prov)]]
+                   [:td.delete
+                    (when (= :event prov)
+                      [:button.ghost.danger
+                       {:title "Retract this fact"
+                        :on-click #(state/retract-triple! domain-id (vec tr))}
+                       "×"])]])]]]))]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Predicate table view
@@ -752,7 +934,7 @@
                                                        (string? orig) orig
                                                        :else (str orig))}})
                        :title "Click to edit"}
-                      (atom-link orig)]))]
+                      [type-value domain-id orig]]))]
         [:tr
          (cell 0 e t1)
          (cell 2 v t2)
@@ -838,61 +1020,117 @@
                (and (seq? head) (symbol? (first head))
                     (= attr-sym (first head)))))))))
 
+(defn- sort-indicator [dir]
+  (case dir :asc " ▲" :desc " ▼" ""))
+
+(defn- cycle-sort
+  "Cycle through nil → :asc → :desc → nil for a given column."
+  [ui-state col]
+  (swap! ui-state update :sort
+         (fn [{:keys [col-cur dir]}]
+           (cond
+             (not= col col-cur) {:col-cur col :dir :asc}
+             (= dir :asc)       {:col-cur col :dir :desc}
+             (= dir :desc)      {:col-cur nil :dir nil}
+             :else              {:col-cur col :dir :asc}))))
+
 (defn predicate-view [name arity]
-  (let [domain-id (state/current-id)
-        d (state/current)
-        attr (keyword name)
-        triples (filter #(= attr (second %)) (state/all-triples domain-id))
-        declared (first (filter #(and (= name (:name %))
-                                      (= arity (count (:argTypes %))))
-                                (get-in d [:schema :predicates])))
-        arg-types (when declared (:argTypes declared))
-        defining-rules (rules-defining-attr d attr)
-        using-rules (rules-using-attr d attr)]
-    [:div.view
-     [:div.view-head
-      [:h2.mono (str name "/" arity)]
-      [:span.desc (count triples) " fact" (when (not= 1 (count triples)) "s")]
-      (if declared
-        [:span.pill.declared "declared"]
-        [:span.pill "discovered"])
-      [move-to-pill domain-id
-       (fn [src dst] (state/move-predicate! src dst name arity))]
-      [:div.actions-right
-       (when declared
-         [:button.ghost.danger
-          {:on-click (fn []
-                       (when (js/confirm
-                              (str "Delete predicate declaration " name "/" arity
-                                   "?\nFacts are not deleted."))
-                         (state/delete-predicate! domain-id name arity)
-                         (state/select! {:kind :rules})))}
-          "Delete declaration"])]]
-     [:table.facts
-      [:thead
-       [:tr
-        (if declared
-          (for [[i t] (map-indexed vector arg-types)]
-            ^{:key i}
-            [:th [:div.h
+  (let [ui-state (r/atom {:query "" :provs #{}
+                          :sort {:col-cur nil :dir nil}})]
+    (fn [name arity]
+      (let [domain-id (state/current-id)
+            d (state/current)
+            attr (keyword name)
+            all-triples (filter #(= attr (second %)) (state/all-triples domain-id))
+            declared (first (filter #(and (= name (:name %))
+                                          (= arity (count (:argTypes %))))
+                                    (get-in d [:schema :predicates])))
+            arg-types (when declared (:argTypes declared))
+            defining-rules (rules-defining-attr d attr)
+            using-rules (rules-using-attr d attr)
+            ;; enrich with provenance
+            rows (mapv (fn [[e a v :as tr]]
+                         {:e e :v v :tr (vec tr)
+                          :prov (state/triple-provenance domain-id tr)})
+                       all-triples)
+            provs-present (set (map :prov rows))
+            {:keys [query provs sort]} @ui-state
+            ;; filter by search
+            filtered (filterv #(row-matches? query [(:e %) (:v %)]) rows)
+            ;; filter by provenance (empty = show all)
+            filtered (if (seq provs)
+                       (filterv #(contains? provs (:prov %)) filtered)
+                       filtered)
+            ;; sort
+            filtered (let [{:keys [col-cur dir]} sort]
+                       (if (and col-cur dir)
+                         (let [k (case col-cur 0 :e 1 :v 2 :prov nil)]
+                           (if k
+                             (vec ((if (= dir :desc) reverse identity)
+                                   (sort-by (comp str k) filtered)))
+                             filtered))
+                         filtered))
+            sort-cur (:col-cur sort)
+            sort-dir (:dir sort)]
+        [:div.view
+         [:div.view-head
+          [:h2.mono (str name "/" arity)]
+          [:span.desc (count all-triples) " fact"
+           (when (not= 1 (count all-triples)) "s")]
+          (if declared
+            [:span.pill.declared "declared"]
+            [:span.pill "discovered"])
+          [move-to-pill domain-id
+           (fn [src dst] (state/move-predicate! src dst name arity))]
+          [:div.actions-right
+           (when declared
+             [:button.ghost.danger
+              {:on-click (fn []
+                           (when (js/confirm
+                                  (str "Delete predicate declaration " name "/" arity
+                                       "?\nFacts are not deleted."))
+                             (state/delete-predicate! domain-id name arity)
+                             (state/select! {:kind :rules})))}
+              "Delete declaration"])]]
+         [table-toolbar
+          {:state-atom ui-state
+           :provs-present provs-present
+           :total (count rows)
+           :shown (count filtered)}]
+         [:table.facts
+          [:thead
+           [:tr
+            (if declared
+              (for [[i t] (map-indexed vector arg-types)]
+                ^{:key i}
+                [:th.sortable {:on-click #(cycle-sort ui-state i)}
+                 [:div.h
                   [:span.type-icon {:title t} (type-icon-for t)]
-                  [:span t]]])
-          [:<> [:th [:div.h [:span.type-icon "◇"] [:span "subject"]]]
-               [:th [:div.h [:span.type-icon "◇"] [:span "object"]]]])
-        [:th ""]]]
-      [:tbody
-       (if (empty? triples)
-         [:tr [:td {:col-span (inc (or (count arg-types) 2))
-                    :style {:padding "24px" :text-align "center" :color "var(--muted)"
-                            :font-family "var(--sans-font)"}}
-               "No facts yet — use the row below to add one."]]
-         (for [[i tr] (map-indexed vector triples)]
-           ^{:key (pr-str tr)}
-           [pred-edit-row domain-id (or arg-types []) tr]))]
-      (let [effective-types (or arg-types ["atom" "atom"])]
-        (when (= 2 (count effective-types))
-          [:tfoot
-           [pred-add-row domain-id name effective-types]]))]
+                  [:span t]
+                  [:span.sort-arrow (when (= i sort-cur) (sort-indicator sort-dir))]]])
+              [:<> [:th.sortable {:on-click #(cycle-sort ui-state 0)}
+                    [:div.h [:span.type-icon "◇"] [:span "subject"]
+                     [:span.sort-arrow (when (= 0 sort-cur) (sort-indicator sort-dir))]]]
+                   [:th.sortable {:on-click #(cycle-sort ui-state 1)}
+                    [:div.h [:span.type-icon "◇"] [:span "object"]
+                     [:span.sort-arrow (when (= 1 sort-cur) (sort-indicator sort-dir))]]]])
+            [:th ""]]]
+          [:tbody
+           (if (empty? filtered)
+             [:tr [:td {:col-span (inc (or (count arg-types) 2))
+                        :style {:padding "24px" :text-align "center"
+                                :color "var(--muted)"
+                                :font-family "var(--sans-font)"}}
+                   (if (empty? all-triples)
+                     "No facts yet — use the row below to add one."
+                     "No rows match the current filter.")]]
+             (for [{:keys [tr]} filtered]
+               ^{:key (pr-str tr)}
+               [pred-edit-row domain-id (or arg-types []) tr]))]
+          (let [effective-types (or arg-types ["atom" "atom"])]
+            (when (= 2 (count effective-types))
+              [:tfoot
+               [pred-add-row domain-id name effective-types]]))]
      (when-not declared
        [:div.declare-hint
         "This predicate isn't declared. "
@@ -943,55 +1181,72 @@
                {:on-click #(state/select! {:kind :rule :name head-name})}
                head-name "/" head-arity]])
            [:div.rule-card.compact
-            [rule-clause r]]])])]))
+            [rule-clause r]]])])]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Type view
 
 (defn type-view [name]
-  (let [domain-id (state/current-id)
-        d (state/current)
-        t (first (filter #(= name (:name %)) (get-in d [:schema :types])))
-        new-ctor (r/atom "")]
+  ;; Local chip-editor state holds the current full constructor list. We
+  ;; sync it from the schema each render (via :loaded-name tracking) so
+  ;; that switching types refreshes correctly.
+  (let [ctors-atom (r/atom [])
+        loaded-name (r/atom nil)
+        last-len (r/atom 0)]
     (fn [name]
       (let [domain-id (state/current-id)
             d (state/current)
-            t (first (filter #(= name (:name %)) (get-in d [:schema :types])))]
+            t (first (filter #(= name (:name %)) (get-in d [:schema :types])))
+            schema-ctors (vec (:constructors t))]
+        ;; reset on type-switch or when the schema changed underneath us
+        (when (or (not= name @loaded-name)
+                  (not= (count schema-ctors) @last-len))
+          (reset! ctors-atom schema-ctors)
+          (reset! loaded-name name)
+          (reset! last-len (count schema-ctors)))
         (if-not t
           [:div.view [:div.empty [:h3 "Type not found"]]]
           [:div.view
            [:div.view-head
             [:h2.mono name]
-            [:span.desc (count (:constructors t)) " value"
-             (when (not= 1 (count (:constructors t))) "s")]
+            [:span.desc (count schema-ctors) " value"
+             (when (not= 1 (count schema-ctors)) "s")]
             [:span.pill.declared "type"]
             [move-to-pill domain-id
              (fn [src dst] (state/move-type! src dst name))]
             [:div.actions-right
+             [:button.primary.small
+              {:disabled (= @ctors-atom schema-ctors)
+               :on-click #(do (state/declare-type! domain-id name @ctors-atom)
+                              (reset! last-len (count @ctors-atom)))}
+              "Save changes"]
              [:button.ghost.danger
               {:on-click (fn []
                            (when (js/confirm (str "Delete type " name "?"))
                              (state/delete-type! domain-id name)
                              (state/select! {:kind :rules})))}
               "Delete type"]]]
-           [:div.constructor-list
-            (for [c (:constructors t)]
-              ^{:key c}
-              [:div.nav-item {:style {:padding-left 0}}
-               [:span.icon "◇"]
-               [:span.name [:a.atom-link
-                            {:on-click #(state/select! {:kind :entity
-                                                        :name (keyword c)})}
-                            c]]])
-            [:div.add-ctor
-             [:input {:placeholder "+ new constructor"
-                      :value @new-ctor
-                      :on-change #(reset! new-ctor (.. % -target -value))
-                      :on-key-down (fn [e]
-                                     (when (= "Enter" (.-key e))
-                                       (.preventDefault e)
-                                       (state/extend-type! domain-id name @new-ctor)
-                                       (reset! new-ctor "")))}]]]])))))
+           [:div.type-editor
+            [chip-editor
+             {:state-atom ctors-atom
+              :placeholder "type a name, Enter to add"
+              :suggestions-fn #(state/untyped-atoms domain-id)}]
+            [:div.hint
+             "Click a chip's × to remove; suggestions are atoms in this "
+             "domain that aren't typed yet. Hit "
+             [:b "Save changes"] " to commit."]]
+           ;; navigable list of current constructors
+           (when (seq schema-ctors)
+             [:div.constructor-list
+              [:h3.section-h "Constructors"]
+              (for [c schema-ctors]
+                ^{:key c}
+                [:div.nav-item {:style {:padding-left 0}}
+                 [:span.icon "◇"]
+                 [:span.name [:a.atom-link
+                              {:on-click #(state/select! {:kind :entity
+                                                          :name (keyword c)})}
+                              c]]])])])))))
 
 ;; ---------------------------------------------------------------------------
 ;; Rule view
@@ -1353,6 +1608,44 @@
 (defn- read-field [id]
   (some-> (.getElementById js/document (str "f-" (name id))) .-value str/trim))
 
+(defn new-type-form
+  "Form-2 component for creating a new type. Name field + chip-editor for
+  constructors, with auto-suggest of existing untyped atoms in the domain."
+  [domain-id]
+  (let [type-name (r/atom "")
+        ctors (r/atom [])]
+    (fn [domain-id]
+      [:<>
+       [:h3 "New type"]
+       [:div.modal-sub "A named union of values, e.g. "
+        [:code "person"] " = "
+        [:code "alice | bob | carol"]
+        ". Constructors drive form dropdowns when this type is used as a "
+        "predicate argument."]
+       [:div.field
+        [:label "Name"]
+        [:input {:placeholder "e.g. person"
+                 :value @type-name
+                 :auto-focus true
+                 :on-change #(reset! type-name (.. % -target -value))}]]
+       [:div.field
+        [:label "Constructors"]
+        [chip-editor
+         {:state-atom ctors
+          :placeholder "type a name, Enter to add"
+          :suggestions-fn #(state/untyped-atoms domain-id)}]]
+       [:div.modal-actions
+        [:button {:on-click state/close-modal!} "Cancel"]
+        [:button.primary
+         {:disabled (or (str/blank? @type-name) (empty? @ctors))
+          :on-click (fn []
+                      (let [n (str/trim @type-name)]
+                        (when (seq n)
+                          (state/declare-type! domain-id n @ctors)
+                          (state/select! {:kind :type :name n}))
+                        (state/close-modal!)))}
+         "Create type"]]])))
+
 (defn modal []
   (let [m (:modal @app-state)]
     (when m
@@ -1376,26 +1669,7 @@
                             (state/close-modal!)))} "Create"]]]
 
           :new-type
-          [:<>
-           [:h3 "New type"]
-           [:div.modal-sub "A named union of values, e.g. " [:code "person ::= alice | bob"]]
-           [text-field {:label "Name" :id "type-name" :placeholder "e.g. person"}]
-           [text-field {:label "Constructors (comma-separated)" :id "type-ctors"
-                        :placeholder "e.g. alice, bob, carol"}]
-           [:div.modal-actions
-            [:button {:on-click state/close-modal!} "Cancel"]
-            [:button.primary
-             {:on-click (fn []
-                          (let [name (read-field "type-name")
-                                ctors (->> (read-field "type-ctors")
-                                           (#(str/split (or % "") #","))
-                                           (map str/trim)
-                                           (remove str/blank?))]
-                            (when (seq name)
-                              (state/declare-type! (:domain m) name (vec ctors))
-                              (state/select! {:kind :type :name name}))
-                            (state/close-modal!)))}
-             "Create"]]]
+          [new-type-form (:domain m)]
 
           :new-predicate
           [:<>
