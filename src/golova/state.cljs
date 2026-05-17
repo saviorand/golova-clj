@@ -718,6 +718,28 @@
                        ident))))
            sort))))
 
+(defn note-backlinks
+  "Return a seq of [entity note-text] for every entity whose note contains
+  a wikilink `[[target]]` pointing at the given entity. The textual scan
+  uses a regex; case-sensitive, matches whole keyword name only."
+  [domain-id target]
+  (let [db (get-in @app-state [:domains domain-id :db])]
+    (when (and db (keyword? target))
+      (let [;; escape regex metacharacters in the target name
+            esc (str/replace (clojure.core/name target)
+                             #"[.*+?^${}()|\[\]\\]" "\\\\$0")
+            re (re-pattern (str "\\[\\[" esc "\\]\\]"))]
+        (->> (d/datoms db :aevt :note)
+             (keep (fn [d]
+                     (let [text (:v d)
+                           from (some-> db (d/datoms :eavt (:e d) :db/ident)
+                                        first :v)]
+                       (when (and text from
+                                  (not= from target)
+                                  (re-find re text))
+                         [from text]))))
+             (sort-by first))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Provenance — derived from the event log
 

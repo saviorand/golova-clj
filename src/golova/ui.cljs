@@ -1295,6 +1295,20 @@
                      :title "Retract"} "×"]])
                 [relation-form-block domain-id e attr arg-types roles]])))
 
+         ;; Linked from notes — wikilink backlinks
+         (let [bl (state/note-backlinks domain-id e)]
+           (when (seq bl)
+             [:div.backlinks
+              [:h3.section-h "Linked from notes"]
+              (for [[from-ent text] bl]
+                ^{:key from-ent}
+                [:div.backlink-row
+                 [:div.bl-head
+                  (atom-link from-ent)]
+                 [:div.bl-snippet
+                  (let [s (str/replace text #"\s+" " ")]
+                    (if (> (count s) 140) (str (subs s 0 140) "…") s))]])]))
+
          ;; Add another relation
          (when (seq declared-preds)
            (let [open-add (:open-add @ui-state)]

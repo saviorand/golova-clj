@@ -637,6 +637,19 @@ a.atom-link.pred-link:hover {
 button.add-note { margin-bottom: 20px; color: var(--dim); font-size: 12px; }
 button.add-note:hover { color: var(--accent); }
 
+/* note backlinks on entity page */
+.backlinks { margin: 32px 0 12px; padding-top: 16px; border-top: 1px solid var(--border); }
+.backlink-row {
+  padding: 8px 12px; margin-bottom: 6px;
+  background: var(--panel); border-radius: 6px;
+}
+.backlink-row .bl-head {
+  font-family: var(--code-font); font-size: 13px; margin-bottom: 2px;
+}
+.backlink-row .bl-snippet {
+  color: var(--muted); font-size: 12.5px; line-height: 1.45;
+}
+
 .entity-hero .title { font-size: 30px; font-weight: 700; }
 .entity-hero .subtitle { color: var(--muted); font-size: 12px; }
 .entity-controls { margin-left: auto; }
