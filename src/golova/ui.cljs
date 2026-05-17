@@ -11,7 +11,7 @@
 
 (def ^:private result-row-cap 200)
 
-(declare atom-link)
+(declare atom-link rule-clause)
 
 ;; ---------------------------------------------------------------------------
 ;; Tiny markdown renderer.
@@ -131,6 +131,20 @@
                      (state/select! {:kind :entity :name v}))}
      (fmt-val v)]
     [:span (fmt-val v)]))
+
+(defn pred-link
+  "Clickable predicate name → navigates to its predicate page. `attr` is a
+  keyword (the attribute name); `arity` defaults to 2."
+  ([attr] (pred-link attr 2))
+  ([attr arity]
+   (if (keyword? attr)
+     [:a.atom-link.pred-link
+      {:on-click #(do (.stopPropagation %)
+                      (state/select! {:kind :predicate
+                                      :name (name attr)
+                                      :arity arity}))}
+      (fmt-val attr)]
+     [:span (str attr)])))
 
 ;; ---------------------------------------------------------------------------
 ;; Popover state. Anchored to a clicked element; rendered via the root.
@@ -669,7 +683,7 @@
                     ^{:key i}
                     [:tr
                      [:td (atom-link e)]
-                     [:td [:span.mono (fmt-val a)]]
+                     [:td [pred-link a]]
                      [:td (atom-link v)]
                      [:td [:span.pill {:class (str "prov-" (name prov))} (name prov)]]
                      [:td.delete
@@ -790,6 +804,26 @@
                           {:kind :move-to :src src-id :mover mover} e))}
      "in " [:b label] " ▾"]))
 
+(defn- rules-using-attr
+  "Return rules whose body references `attr` — either as a Datalog pattern
+  `[?e attr ?v]` or as a rule-call `(attr-name ?a ?b)`."
+  [domain attr]
+  (let [attr-sym (symbol (clojure.core/name attr))]
+    (->> (:rules domain)
+         (filter
+           (fn [rule]
+             (let [body (rest rule)]
+               (some (fn [c]
+                       (cond
+                         ;; pattern [?e attr ?v]
+                         (and (vector? c) (>= (count c) 3)
+                              (= attr (second c))) true
+                         ;; rule call (attr-name ?a ?b)
+                         (and (seq? c) (symbol? (first c))
+                              (= attr-sym (first c))) true
+                         :else false))
+                     body)))))))
+
 (defn predicate-view [name arity]
   (let [domain-id (state/current-id)
         d (state/current)
@@ -798,7 +832,8 @@
         declared (first (filter #(and (= name (:name %))
                                       (= arity (count (:argTypes %))))
                                 (get-in d [:schema :predicates])))
-        arg-types (when declared (:argTypes declared))]
+        arg-types (when declared (:argTypes declared))
+        using-rules (rules-using-attr d attr)]
     [:div.view
      [:div.view-head
       [:h2.mono (str name "/" arity)]
@@ -855,7 +890,24 @@
        [:div.declare-hint
         "Add-row form only supports arity-2 predicates today. "
         [:span {:style {:color "var(--dim)"}}
-         "(Arity " (count arg-types) " requires entity reification.)"]])]))
+         "(Arity " (count arg-types) " requires entity reification.)"]])
+     (when (seq using-rules)
+       [:div.used-in
+        [:h3.section-h "Used in rules"]
+        (for [[i r] (map-indexed vector using-rules)
+              :let [head (first r)
+                    head-name (when (and (seq? head) (symbol? (first head)))
+                                (clojure.core/name (first head)))
+                    head-arity (when (seq? head) (count (rest head)))]]
+          ^{:key i}
+          [:div.used-in-card
+           (when head-name
+             [:div.used-in-head
+              [:a.atom-link
+               {:on-click #(state/select! {:kind :rule :name head-name})}
+               head-name "/" head-arity]])
+           [:div.rule-card.compact
+            [rule-clause r]]])])]))
 
 ;; ---------------------------------------------------------------------------
 ;; Type view
@@ -1189,7 +1241,7 @@
                    hidden (- (count trs) (count shown))]
                [:div.relation-group
                 [:h3.rel-attr
-                 [:span.rel-name (fmt-val attr)]
+                 [:span.rel-name [pred-link attr]]
                  [:span.dim " — " (count shown)
                   (when (pos? hidden)
                     [:span.tiny-hint
