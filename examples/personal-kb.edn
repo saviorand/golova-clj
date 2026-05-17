@@ -25,7 +25,7 @@
 {:current-domain :people
  :selection {:kind :rules}
  :theme :light
- :expanded #{:people :books :tasks}
+ :expanded #{}
  :domains
  {;; =====================================================================
   ;; PEOPLE

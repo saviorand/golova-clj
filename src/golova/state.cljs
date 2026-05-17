@@ -33,14 +33,15 @@
     :backend nil
     :domains {}
     :current-domain nil
-    :selection {:kind :rules}
+    :selection {:kind :home}
     :theme :light
     :expanded #{}
     :modal nil
     :top-query {:text "" :result nil}
     :last-saved nil
     :error nil
-    :first-run? false}))
+    :first-run? false
+    :home {:onboarding-collapsed? false}}))
 
 (defn current []
   (let [s @app-state]
@@ -56,8 +57,10 @@
   "Always-present schema. Named entities are identified by Datahike's
   built-in `:db/ident` attribute — so `:alice`, `:bob`, `:sf` etc. are
   not just keyword values but resolve to the matching entity in
-  ref-typed positions."
-  {})
+  ref-typed positions.
+
+  `:note` is a markdown string attached to any entity (one per entity)."
+  {:note {:db/cardinality :db.cardinality/one}})
 
 (defn- ref-arg-type?
   "True if the named arg type stores references to named entities (atoms)
@@ -280,6 +283,7 @@
    :selection (:selection state)
    :theme (:theme state)
    :expanded (vec (:expanded state))
+   :home (:home state)
    :domains (into {}
                   (for [[id d] (:domains state)]
                     [id (select-keys d [:id :label :rules :events
@@ -337,15 +341,17 @@
     (if (and snap (seq (:domains snap)))
       (swap! app-state assoc
              :current-domain (:current-domain snap)
-             :selection (or (:selection snap) {:kind :rules})
+             :selection (or (:selection snap) {:kind :home})
              :theme (or (:theme snap) :light)
              :expanded (set (:expanded snap))
+             :home (merge {:onboarding-collapsed? false} (:home snap))
              :domains (:domains snap))
       (let [id :starter]
         (swap! app-state assoc
                :domains {id (starter-domain id "Starter")}
                :current-domain id
-               :expanded #{id}
+               :expanded #{}
+               :selection {:kind :home}
                :first-run? true)))
     (when (and (:current-domain @app-state)
                (not (contains? (:domains @app-state) (:current-domain @app-state))))
@@ -379,6 +385,15 @@
 (defn open-modal! [m] (swap! app-state assoc :modal m))
 (defn close-modal! [] (swap! app-state assoc :modal nil))
 
+(defn go-home! []
+  (swap! app-state assoc :selection {:kind :home})
+  (save!))
+
+(defn toggle-onboarding! []
+  (swap! app-state update-in [:home :onboarding-collapsed?] not)
+  (save!))
+
+
 (defn open-palette! [] (swap! app-state assoc :palette {:open? true :query "" :index 0}))
 (defn close-palette! [] (swap! app-state assoc :palette nil))
 (defn toggle-palette! []
@@ -394,7 +409,6 @@
   (let [id (fresh-domain-id label)]
     (swap! app-state assoc-in [:domains id] (empty-domain id label))
     (swap! app-state assoc :current-domain id)
-    (swap! app-state update :expanded conj id)
     (rebuild!)
     (save!)
     id))
@@ -449,6 +463,23 @@
           (mk-event :assert {:triple (vec new)} "edit")])
   (rebuild!)
   (save!))
+
+(defn set-note!
+  "Set or clear the markdown note attached to an entity. Empty string
+  retracts the note. Stored under attr `:note` (string, cardinality :one
+  — one note per entity for now)."
+  [domain-id entity markdown]
+  (let [trimmed (str/trim (or markdown ""))
+        db (get-in @app-state [:domains domain-id :db])
+        existing (some-> db (d/datoms :eavt entity :note) first :v)]
+    (cond
+      (and (str/blank? trimmed) existing)
+      (retract-triple! domain-id [entity :note existing])
+      (str/blank? trimmed) nil
+      existing
+      (replace-triple! domain-id [entity :note existing] [entity :note trimmed])
+      :else
+      (assert-triple! domain-id [entity :note trimmed] "note"))))
 
 ;; ---------------------------------------------------------------------------
 ;; Form helpers
@@ -563,7 +594,7 @@
     (swap! app-state assoc
            :domains {id (starter-domain id "Starter")}
            :current-domain id
-           :expanded #{id}))
+           :expanded #{}))
   (rebuild!)
   (save!))
 
@@ -667,6 +698,25 @@
   [domain-id entity]
   (let [trs (all-triples domain-id)]
     (filterv (fn [[e _ v]] (or (= e entity) (= v entity))) trs)))
+
+(defn entity-note
+  "Return the markdown note string attached to `entity`, or nil."
+  [domain-id entity]
+  (let [db (get-in @app-state [:domains domain-id :db])]
+    (some-> db (d/datoms :eavt entity :note) first :v)))
+
+(defn entities-with-notes
+  "Return a sorted seq of entity keywords that have a non-empty :note."
+  [domain-id]
+  (let [db (get-in @app-state [:domains domain-id :db])]
+    (when db
+      (->> (d/datoms db :aevt :note)
+           (keep (fn [d]
+                   (let [ident (some-> db (d/datoms :eavt (:e d) :db/ident)
+                                       first :v)]
+                     (when (and ident (not (str/blank? (:v d))))
+                       ident))))
+           sort))))
 
 ;; ---------------------------------------------------------------------------
 ;; Provenance — derived from the event log

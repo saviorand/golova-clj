@@ -11,6 +11,107 @@
 
 (def ^:private result-row-cap 200)
 
+(declare atom-link)
+
+;; ---------------------------------------------------------------------------
+;; Tiny markdown renderer.
+;;   Supports: # / ## / ### headings, **bold**, *italic*, `code`, ``` fences,
+;;   - and 1. lists, [text](url), [[wikilink]], paragraphs.
+
+(defn- md-split
+  "Walk a hiccup vector or raw string. String descendants get split by
+  `re`, each match wrapped via `wrap`. Vector descendants are recursed
+  into. Non-string atoms (keywords, numbers, etc.) pass through.
+  Always returns a single value of the same shape category as the input."
+  [re wrap node]
+  (cond
+    (string? node)
+    ;; returns seq of chunks
+    (let [chunks (atom [])
+          last-idx (atom 0)]
+      (doseq [m (re-seq re node)]
+        (let [match (if (vector? m) (first m) m)
+              idx (.indexOf node match @last-idx)]
+          (when (> idx @last-idx)
+            (swap! chunks conj (subs node @last-idx idx)))
+          (swap! chunks conj (wrap m))
+          (reset! last-idx (+ idx (count match)))))
+      (when (< @last-idx (count node))
+        (swap! chunks conj (subs node @last-idx)))
+      @chunks)
+
+    (vector? node)
+    ;; returns a vector (same shape)
+    (let [tag (first node)
+          props? (map? (second node))
+          props (when props? (second node))
+          children (drop (if props? 2 1) node)
+          ;; only string children produce seqs to be flattened; everything
+          ;; else (vector, keyword, etc.) stays a single child.
+          new-children (mapcat (fn [c]
+                                 (let [r (md-split re wrap c)]
+                                   (if (string? c) r [r])))
+                               children)]
+      (into (if props [tag props] [tag]) new-children))
+
+    :else node))
+
+(defn- md-inline
+  "Inline markdown → hiccup. Order: code first (its contents are sealed),
+  then wikilinks, then links, bold, italic."
+  [s]
+  (-> [:span s]
+      (->> (md-split #"`([^`]+)`"
+                     (fn [m] [:code (second m)])))
+      (->> (md-split #"\[\[([^\]]+)\]\]"
+                     (fn [m]
+                       (let [n (second m)]
+                         [atom-link (keyword n)]))))
+      (->> (md-split #"\[([^\]]+)\]\(([^)]+)\)"
+                     (fn [m] [:a {:href (nth m 2) :target "_blank"} (nth m 1)])))
+      (->> (md-split #"\*\*([^*]+)\*\*"
+                     (fn [m] [:b (second m)])))
+      (->> (md-split #"\*([^*]+)\*"
+                     (fn [m] [:i (second m)])))))
+
+(defn- md-block [block]
+  (cond
+    (re-find #"^```" block)
+    [:pre.codefence [:code (str/join "\n"
+                                      (->> (str/split block #"\n")
+                                           (drop-while #(re-find #"^```" %))
+                                           (take-while #(not (re-find #"^```" %)))))]]
+
+    (re-find #"^### " block) [:h4 (md-inline (subs block 4))]
+    (re-find #"^## "  block) [:h3 (md-inline (subs block 3))]
+    (re-find #"^# "   block) [:h2 (md-inline (subs block 2))]
+
+    (re-find #"^(- |\* )" (str/trim-newline block))
+    (into [:ul]
+          (for [line (str/split block #"\n")
+                :let [m (re-find #"^(?:- |\* )(.+)" line)]
+                :when m]
+            [:li (md-inline (second m))]))
+
+    (re-find #"^\d+\. " (str/trim-newline block))
+    (into [:ol]
+          (for [line (str/split block #"\n")
+                :let [m (re-find #"^\d+\.\s+(.+)" line)]
+                :when m]
+            [:li (md-inline (second m))]))
+
+    :else
+    [:p (md-inline block)]))
+
+(defn markdown
+  "Render markdown text to hiccup. Splits on blank lines into blocks."
+  [text]
+  (when (and text (not (str/blank? text)))
+    (into [:div.md]
+          (for [b (str/split text #"\n\n+")
+                :when (not (str/blank? b))]
+            (md-block b)))))
+
 ;; ---------------------------------------------------------------------------
 ;; Formatting helpers
 
@@ -239,7 +340,8 @@
    (when meta [:span.meta meta])])
 
 (defn sidebar []
-  (let [{:keys [domains current-domain selection expanded]} @app-state]
+  (let [{:keys [domains current-domain selection expanded]} @app-state
+        on-home? (= :home (:kind selection))]
     [:aside
      ;; brand
      [:div.brand
@@ -250,6 +352,12 @@
        {:title "Toggle theme"
         :on-click #(state/set-theme! (if (= :dark (:theme @app-state)) :light :dark))}
        (if (= :dark (:theme @app-state)) "☾" "☼")]]
+
+     ;; home link
+     [:div.home-link {:class (when on-home? "active")
+                      :on-click #(state/go-home!)}
+      [:span.icon "🏠"]
+      [:span.lbl "Home"]]
 
      ;; domains
      [:div.section
@@ -343,6 +451,20 @@
                 :label (:name q)
                 :on-click #(do (state/switch-domain! id)
                                (state/select! {:kind :query :name (:name q)}))}])
+            (let [notes (state/entities-with-notes id)]
+              (when (seq notes)
+                [:<>
+                 (sub "Notes" notes nil)
+                 (for [n notes]
+                   ^{:key (str "n-" (name n))}
+                   [nav-item
+                    {:active? (and active-domain?
+                                   (= :entity (:kind selection))
+                                   (= n (:name selection)))
+                     :icon "✎"
+                     :label (fmt-val n)
+                     :on-click #(do (state/switch-domain! id)
+                                    (state/select! {:kind :entity :name n}))}])]))
             [nav-item
              {:active? (and active-domain? (= :rules (:kind selection)))
               :icon "ƒ"
@@ -364,6 +486,96 @@
         "⚙ Settings"]]
       [:div.kshort [:span.lbl "Palette"] [:kbd "⌘K"]]
       [:div.kshort [:span.lbl "Rebuild"] [:kbd "⌘↵"]]]]))
+
+;; ---------------------------------------------------------------------------
+;; Home view — onboarding + domains overview
+
+(defn- glossary []
+  [:div.glossary
+   [:div.gloss-item
+    [:span.term "Atom"]
+    [:span.def "A named thing — alice, sf, dune. Stored as a Datahike "
+     [:code ":db/ident"] " so you can refer to it by keyword anywhere."]]
+   [:div.gloss-item
+    [:span.term "Predicate"]
+    [:span.def "An attribute (a relation), like " [:code ":parent"] " or "
+     [:code ":lives-in"] ". Each predicate is one Datahike schema entry. "
+     [:b "▦ declared"] " = you set up the arg types; "
+     [:b "▢ discovered"] " = the app inferred it from your data."]]
+   [:div.gloss-item
+    [:span.term "Rule"]
+    [:span.def "A Datalog inference clause, like "
+     [:code "[(ancestor ?a ?d) [?a :parent ?d]]"]
+     ". Rules are run to fixed-point at every rebuild — their outputs "
+     "are stored as real facts so queries don't need special syntax."]]
+   [:div.gloss-item
+    [:span.term "Fact provenance"]
+    [:span.def
+     [:span.pill.prov-event "event"] " — you asserted this via the UI or import. "
+     [:span.pill.prov-derived "derived"] " — a rule produced this from other facts. "
+     [:span.pill.prov-imported "imported"] " — pulled from another domain."]]
+   [:div.gloss-item
+    [:span.term "Domain"]
+    [:span.def "A separate Datahike database with its own schema, facts, "
+     "and rules. Use domains to scope things — e.g. \"books\", \"people\". "
+     "Cross-domain imports let you reference facts from one in another."]]
+   [:div.gloss-item
+    [:span.term "Notes"]
+    [:span.def "Any entity can have a markdown note. Use "
+     [:code "[[wikilink]]"] " syntax inside a note to link to another atom."]]])
+
+(defn home-view []
+  (let [s @app-state
+        collapsed? (get-in s [:home :onboarding-collapsed?])]
+    [:div.view.home
+     [:div.home-hero
+      [:div.home-logo
+       [:span.logo-big "G"]]
+      [:div
+       [:h1 "Golova"]
+       [:p.tagline "A small, no-server PKM built on Datahike. "
+        "Triples, rules, derivations — your knowledge as a graph."]]]
+
+     [:div.section-card
+      [:div.section-card-head
+       [:h3 "Getting started"]
+       [:button.ghost.small
+        {:on-click #(state/toggle-onboarding!)}
+        (if collapsed? "show" "hide")]]
+      (when-not collapsed?
+        [:div.section-card-body
+         [:p "Golova represents your knowledge as " [:b "triples"] ": "
+          [:code "[subject attribute value]"] ". The starter domain has "
+          [:code "[alice :parent bob]"] " etc. — type facts in the predicate "
+          "tables or via Cmd-K, define inference rules, and ask queries."]
+         [glossary]
+         [:p.hint "Quick keys: " [:kbd "⌘K"] " palette, "
+          [:kbd "⌘↵"] " save rules, " [:kbd "Esc"] " close popovers."]])]
+
+     [:div.section-card
+      [:div.section-card-head
+       [:h3 "Domains"]
+       [:button.primary.small
+        {:on-click #(state/open-modal! {:kind :new-domain})}
+        "+ New"]]
+      [:div.section-card-body
+       [:div.domains-grid
+        (for [[id d] (sort-by (comp str first) (:domains s))]
+          (let [n-facts (count (state/all-triples id))
+                n-preds (count (get-in d [:schema :predicates]))
+                n-rules (count (:rules d))]
+            ^{:key id}
+            [:div.domain-card
+             {:on-click #(state/switch-domain! id)}
+             [:div.dc-name (:label d)]
+             [:div.dc-meta
+              [:span n-facts " facts"]
+              [:span n-preds " preds"]
+              [:span n-rules " rules"]]]))
+        [:div.domain-card.new
+         {:on-click #(state/open-modal! {:kind :new-domain})}
+         [:div.dc-name "+ New domain"]
+         [:div.dc-meta "Empty"]]]]]]))
 
 ;; ---------------------------------------------------------------------------
 ;; Rules editor
@@ -895,12 +1107,48 @@
      ^{:key role}
      [entity-add-form domain-id entity attr role arg-types])])
 
+(defn- entity-note-block
+  "Markdown note section: view-mode renders, edit-mode shows a textarea.
+  Empty + view-mode shows a tiny + Add note button."
+  [domain-id entity]
+  (let [editing? (r/atom false)
+        draft (r/atom nil)]
+    (fn [domain-id entity]
+      (let [note (state/entity-note domain-id entity)]
+        (if @editing?
+          [:div.entity-note.editing
+           [:textarea.note-edit
+            {:auto-focus true
+             :placeholder "Markdown notes about this entity. [[wikilinks]] are linked atoms."
+             :default-value (or @draft note "")
+             :on-change #(reset! draft (.. % -target -value))}]
+           [:div.note-controls
+            [:button.primary.small
+             {:on-click (fn []
+                          (state/set-note! domain-id entity (or @draft note ""))
+                          (reset! editing? false)
+                          (reset! draft nil))}
+             "Save"]
+            [:button.ghost.small
+             {:on-click (fn [] (reset! editing? false) (reset! draft nil))}
+             "Cancel"]]]
+          (if (and note (not (str/blank? note)))
+            [:div.entity-note
+             [markdown note]
+             [:div.note-controls
+              [:button.ghost.small {:on-click #(reset! editing? true)} "Edit note"]]]
+            [:button.ghost.small.add-note
+             {:on-click #(reset! editing? true)}
+             "+ Add note"]))))))
+
 (defn entity-view [e]
   (let [ui-state (r/atom {:open-add nil :dedupe? true})]
     (fn [e]
       (let [domain-id (state/current-id)
             d (state/current)
             triples (state/entity-mentions domain-id e)
+            ;; hide :note from the relation groups — it has its own section.
+            triples (remove #(= :note (second %)) triples)
             by-attr (group-by second triples)
             declared-preds (->> (get-in d [:schema :predicates])
                                 (filter #(= 2 (count (:argTypes %)))))
@@ -922,6 +1170,8 @@
                       "Showing every triple, including duplicates and self-loops")
              :on-click #(swap! ui-state update :dedupe? not)}
             (if dedupe? "showing canonical" "showing all")]]]
+
+         [entity-note-block domain-id e]
 
          (if (empty? triples)
            [:div.empty
@@ -1402,23 +1652,16 @@
 (defn main []
   (let [s @app-state
         sel (:selection s)]
-    (cond
-      (nil? (:current-domain s))
-      [:div.view [:div.empty
-                  [:h3 "Welcome to Golova"]
-                  [:p "Create a domain to begin."]
-                  [:button.primary
-                   {:on-click #(state/open-modal! {:kind :new-domain})}
-                   "+ New domain"]]]
-
-      :else
-      (case (:kind sel)
-        :type      [type-view (:name sel)]
-        :predicate [predicate-view (:name sel) (:arity sel)]
-        :rule      [rule-view (:name sel)]
-        :query     [query-view (:name sel)]
-        :entity    [entity-view (:name sel)]
-        [rules-view]))))
+    (case (:kind sel)
+      :home      [home-view]
+      :type      [type-view (:name sel)]
+      :predicate [predicate-view (:name sel) (:arity sel)]
+      :rule      [rule-view (:name sel)]
+      :query     [query-view (:name sel)]
+      :entity    [entity-view (:name sel)]
+      (if (:current-domain s)
+        [rules-view]
+        [home-view]))))
 
 (defn root []
   [:<>
