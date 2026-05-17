@@ -220,23 +220,22 @@
 ;; ---------------------------------------------------------------------------
 ;; Type-aware value display
 
-(defn- type-of-value
-  "Return the declared-type name (string) for value `v` in this domain, or
-  nil. Iterates type defs to find one whose constructors include v."
-  [domain-id v]
-  (when (keyword? v)
-    (let [n (name v)]
-      (some (fn [t]
-              (when (some #{n} (:constructors t))
-                (:name t)))
-            (get-in @app-state [:domains domain-id :schema :types])))))
+(defn- constructor-type-map
+  "Build a {constructor-name-str → type-name-str} lookup map for a domain.
+  Called once per render at the view level, not per cell."
+  [domain-id]
+  (into {}
+        (for [t (get-in @app-state [:domains domain-id :schema :types])
+              c (:constructors t)]
+          [c (:name t)])))
 
 (defn type-value
   "Render a value with a small type-name pill prefix when the value is a
   constructor of a declared type — gives bigger tables much more visual
-  scanning structure."
-  [domain-id v]
-  (if-let [tn (type-of-value domain-id v)]
+  scanning structure. `ctor-map` is a {name-str → type-name-str} lookup
+  built once per render via `constructor-type-map`."
+  [ctor-map v]
+  (if-let [tn (and (keyword? v) (get ctor-map (name v)))]
     [:span.type-value {:class (str "type-" tn)}
      (atom-link v)]
     (atom-link v)))
@@ -815,7 +814,8 @@
                   :else "edited — press Save (or ⌘↵)")]]]
          ;; Stored triples
          (when (:db d)
-           (let [triples (state/all-triples domain-id)
+           (let [ctor-map (constructor-type-map domain-id)
+                 triples (state/all-triples domain-id)
                  rows (mapv (fn [[e a v :as tr]]
                               {:e e :a a :v v :tr (vec tr)
                                :prov (state/triple-provenance domain-id tr)})
@@ -866,7 +866,7 @@
                   [:tr
                    [:td (atom-link e)]
                    [:td [pred-link a]]
-                   [:td [type-value domain-id v]]
+                   [:td [type-value ctor-map v]]
                    [:td [:span.pill {:class (str "prov-" (name prov))} (name prov)]]
                    [:td.delete
                     (when (= :event prov)
@@ -900,8 +900,9 @@
   [domain-id arg-types triple]
   (let [tr (vec triple)
         [e a v] tr
-        edit (r/atom nil)]                              ;; nil | {:idx i :st {:val ...}}
-    (fn [_ arg-types triple]
+        edit (r/atom nil)                              ;; nil | {:idx i :st {:val ...}}
+        ctor-map (constructor-type-map domain-id)]
+    (fn [domain-id arg-types triple]
       (let [tr (vec triple)
             [e a v] tr
             t1 (or (first arg-types)  (guess-type e))
@@ -934,7 +935,7 @@
                                                        (string? orig) orig
                                                        :else (str orig))}})
                        :title "Click to edit"}
-                      [type-value domain-id orig]]))]
+                      [type-value ctor-map orig]]))]
         [:tr
          (cell 0 e t1)
          (cell 2 v t2)

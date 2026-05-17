@@ -1,6 +1,6 @@
 # Golova
 
-Notion-flavored knowledge-base UI on top of a Naga + Datahike backend, running
+Notion-flavored knowledge-base UI on top of a Datahike backend, running
 entirely in the browser (ClojureScript). No server, no native binary — distributes
 as static files and installs as a PWA on Android.
 
@@ -8,8 +8,8 @@ as static files and installs as a PWA on Android.
 
 - **ClojureScript** via **Shadow CLJS**
 - **Reagent** for views
-- **Naga** for the rules engine (Datalog with Pabu-style source)
 - **Datahike** as the in-memory triple store
+- Hand-rolled fixed-point rule materialiser (Datalog rules over Datahike)
 - LocalStorage for persistence (event-sourced)
 
 ## What's where
@@ -20,9 +20,7 @@ src/golova/
   state.cljs     — domain model, rebuild, schema CRUD, persistence
   ui.cljs        — Reagent views (sidebar, topbar, scratch, predicate, type,
                    rule, query, entity, modal)
-  proof.cljs     — derivation explainer (proof trees, ready to surface)
   storage.cljs   — localStorage backend + snapshot export/import
-src/naga/storage/datahike/core.cljc  — Naga store adapter for Datahike
 public/
   index.html
   style.css     — Notion-flavored light/dark theme
@@ -36,7 +34,7 @@ package.json
 ```sh
 npm install
 npx shadow-cljs watch app
-# then open http://localhost:8089/index.html
+# then open http://localhost:8088/index.html
 ```
 
 For a release build:
@@ -47,15 +45,15 @@ npx shadow-cljs release app
 
 ## Concepts
 
-- **Domain** — a self-contained Naga program (rules + axioms) with its own
+- **Domain** — a self-contained knowledge base (rules + facts) with its own
   event log and optional cross-domain imports. Switch domains via the sidebar.
 - **Type** — a UI-level declaration: a name plus a list of constructors. Used
   to drive forms and column types. *Not enforced* by the engine.
 - **Predicate** — a UI-level declaration: name + typed args. Discovered
   predicates (attributes that exist in the store without a declaration) are
   also surfaced.
-- **Rule** — a Naga rule, derived from a domain's program text. Edit via the
-  "Scratch" view (raw program text) or append via the "+ Rule" modal.
+- **Rule** — a Datalog rule, derived from a domain's program text. Edit via the
+  "Rules" view (raw program text) or append via the "+ Rule" modal.
 - **Saved query** — a named query body that lives in the sidebar and can be
   re-run with one click.
 - **Entity** — an atom that appears as an argument anywhere. Click any atom-
@@ -77,7 +75,7 @@ flows, light/dark theme, localStorage persistence.
 
 Next steps (not yet wired):
 - Slash menu in scratch (insert facts/rules via `/`)
-- Proof trees on derivation (engine support exists in `proof.cljs`)
+- Proof trees on derivation
 - Cross-domain imports UI
 - PWA manifest + service worker
 - CSV / EDN import
