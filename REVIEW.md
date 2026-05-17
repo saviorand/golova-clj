@@ -44,6 +44,163 @@ Datalog database) with localStorage persistence. ~3000 lines across 4 files.
 
 ### Critical Issues
 
+**1. Schema-on-read by accident — Datahike's validation is completely bypassed.**
+
+This is the most consequential finding. In `rebuild-domain`:
+
+```clojure
+(let [schema (build-schema domain)
+      db0 (d/empty-db schema)
+```
+
+`d/empty-db` with no config map defaults to `:schema-flexibility :read`
+(Datahike's `storeless-config` in `config.cljc` line 143). This means:
+
+- **No type validation.** You can store `42` where a `:db.type/string` is
+  defined and Datahike won't complain.
+- **No cardinality enforcement.** `:db.cardinality/one` attributes silently
+  accept multiple values.
+- **No uniqueness constraints.** `:db.unique/identity` and `:db.unique/value`
+  are ignored.
+- **No ref resolution.** `:db.type/ref` attributes don't resolve `:db/ident`
+  keywords to entity IDs — they're stored as plain keywords.
+
+Datahike has a full schema-on-write mode (`:schema-flexibility :write`) that
+enforces all of these via `clojure.spec` predicates in `schema.cljc`
+(`value-valid?` checks `:db.type/string` → `string?`, `:db.type/long` → Long,
+etc.). It's the default when you use `d/create-database` — but `d/empty-db`
+bypasses it.
+
+**Fix:** Pass `{:schema-flexibility :write}` as the second arg to `d/empty-db`:
+
+```clojure
+(d/empty-db schema {:schema-flexibility :write})
+```
+
+This single change would activate real type enforcement, cardinality
+validation, uniqueness constraints, and proper ref resolution — turning the
+Datahike schema from dead metadata into a live constraint system.
+
+**2. "Types" are just enums — and even those aren't enforced.**
+
+Types are declared in `:schema` as named sets of keyword constructors (e.g.
+`person` = `alice | bob | carol`). They're enums, nothing more. They're never
+validated against the Datahike store — you can assert `[:bob :parent 42]`
+where `:parent` expects `[person person]` and the engine accepts it. The
+`coerce-value` function does some parsing but it's opt-in (only used by the
+form helper).
+
+Meanwhile, Datahike's actual schema system supports rich type semantics that go
+completely unused:
+
+| Datahike feature | Status in Golova |
+|---|---|
+| `:db.type/ref` (entity references) | Used for some predicates, but refs aren't resolved (schema-on-read) |
+| `:db.type/string`, `:db.type/long`, etc. | Never declared — no value type enforcement |
+| `:db.cardinality/one` / `:many` | Set in `build-schema` but never enforced (schema-on-read) |
+| `:db.unique/identity` / `:unique/value` | Never used |
+| `:db/isComponent` (cascading deletes) | Never used |
+| `:db/doc` (attribute documentation) | Never used |
+| `:db/index` (index hints) | Never used |
+| Entity specs (`:db.entity/attrs`, `:db.entity/preds`) | Never used — would enable required-attribute and predicate validation |
+| Composite tuples (`:db/tuple`, `:db/tupleAttrs`) | Never used — could model compound keys |
+| `d/explain` (query plan visualization) | Never used |
+| Historical queries (`d/history`, `d/as-of`, `d/since`) | Not applicable (rebuilds from scratch) |
+| Schema migration (norms) | Not applicable (event-sourced rebuild) |
+
+The chip-editor and `new-type-form` make the enum declaration experience
+significantly better — but they don't change the underlying tension. Types are
+still purely declarative metadata with no enforcement. The `type-value` pill
+rendering (color-coded by type) further reinforces the impression that types
+are "real" when they're not enforced at the data layer.
+
+**What a richer type system could look like:**
+
+A declared type like `person` could become a Datahike entity spec that enforces
+`:db.entity/attrs` (required attributes) on every entity tagged as a person.
+Predicates could declare `:db.type/ref` with `:db/unique :db.unique/identity`
+so that lookup refs work correctly and the engine prevents duplicate entities.
+Scalar predicates could use `:db.type/long` or `:db.type/string` so that
+`42` can't be stored in a string field. This is all available in Datahike today
+— the infrastructure is there, it's just not wired up.
+
+**3. `rebuild!` is O(n²) and called on every mutation.**
+
+Every `assert-triple!`, `retract-triple!`, `replace-triple!`, `set-rules!`,
+`declare-type!`, etc. calls `rebuild!`, which:
+
+1. Creates a fresh empty Datahike DB
+2. Replays the **entire event log** from scratch
+3. Runs all rules to fixed-point (up to 25 iterations)
+4. Does this for **every domain**, not just the changed one
+
+For a domain with 1000 events and 10 rules, this means 1000 transacts + 250
+rule evaluations on every mutation. The `materialize-rules` loop runs `d/q`
+for every rule on every iteration, with `distinct` on the full tx set each
+time.
+
+The new `extend-type!` function (called from `typed-input`'s "+ new" dropdown)
+also triggers `rebuild!` — meaning every time a user adds a constructor via
+the inline dropdown, the entire DB is rebuilt and persisted. The chip-editor
+batches (rebuild only on "Save changes"), but this path doesn't batch.
+
+**Fix:** Use Datahike's incremental transaction model. Maintain a persistent
+connection (`d/connect`) and transact only new events via `d/transact`. Datahike
+handles incremental index updates internally — no need to replay from scratch.
+Rule materialisation would need a dirty-flag check (only re-run rules whose
+input attributes changed), but the base DB would be incremental.
+
+**4. localStorage serialisation is fragile and unbounded.**
+
+`(pr-str snapshot)` serialises the entire state including all events as EDN.
+There's no:
+
+- Size limit or quota checking
+- Compression
+- Migration strategy (the key is `golova.state.v1` but there's no version
+  negotiation)
+- Error recovery beyond catching read failures
+
+A domain with 5000 events will produce a multi-MB EDN string. localStorage has
+a ~5MB limit per origin in most browsers. You'll hit this silently.
+
+**Datahike has a built-in solution:** the `konserve-indexeddb` backend
+(`{:store {:backend :indexeddb}}`) provides persistent browser storage with
+much higher capacity than localStorage. Combined with `TieredStore`
+(`{:store {:backend :tiered :frontend-config {:backend :memory}
+:backend-config {:backend :indexeddb}}}`), you'd get fast in-memory reads with
+persistent IndexedDB backing — and the event log becomes a real Datahike
+transaction history rather than a serialised blob.
+
+**5. The `proof.cljs` file mentioned in README doesn't exist.**
+
+The README references `proof.cljs` as "derivation explainer (proof trees,
+ready to surface)" but no such file exists in the source tree. This is
+misleading documentation.
+
+**6. No error boundaries or error recovery in the UI.**
+
+If `rebuild!` throws (which it does catch), the error is stored in `:error` but
+there's no UI feedback mechanism beyond a top-level error display. If a rule
+produces an unexpected schema, the entire app state is corrupted until a page
+reload. There's no undo mechanism despite having an event log that could
+support it.
+
+The new `pred-add-row` and `entity-add-form` do catch errors locally and
+display them inline, which is good. But the core rebuild path is still
+unprotected from the user's perspective.
+
+**7. The query parser is a security/injection vector.**
+
+`run-query` calls `reader/read-string` on user input, then passes the result to
+`d/q`. While this is a client-side app (so the blast radius is limited to the
+user's own data), a malformed query can corrupt the Datahike db or throw
+uncaught exceptions that leave the app in a broken state.
+
+---
+
+### Design Tensions
+
 **1. Single Atom Architecture — the 2000-line `ui.cljs` problem.**
 
 All state lives in one `app-state` atom. `ui.cljs` is **2050 lines** mixing
@@ -72,91 +229,6 @@ rest of the view layer.
 **Recommendation:** Split `ui.cljs` into `views/sidebar.cljs`,
 `views/predicate.cljs`, `views/entity.cljs`, `views/table-toolbar.cljs`, etc.
 Use Reagent cursors or `r/cursor` to scope subscriptions.
-
-**2. `rebuild!` is O(n²) and called on every mutation.**
-
-Every `assert-triple!`, `retract-triple!`, `replace-triple!`, `set-rules!`,
-`declare-type!`, etc. calls `rebuild!`, which:
-
-1. Creates a fresh empty Datahike DB
-2. Replays the **entire event log** from scratch
-3. Runs all rules to fixed-point (up to 25 iterations)
-4. Does this for **every domain**, not just the changed one
-
-For a domain with 1000 events and 10 rules, this means 1000 transacts + 250
-rule evaluations on every keystroke-save. The `materialize-rules` loop runs
-`d/q` for every rule on every iteration, with `distinct` on the full tx set
-each time.
-
-The new `extend-type!` function (called from `typed-input`'s "+ new" dropdown)
-also triggers `rebuild!` — meaning every time a user adds a constructor via
-the inline dropdown, the entire DB is rebuilt and persisted. The chip-editor
-batches (rebuild only on "Save changes"), but this path doesn't.
-
-**Recommendation:** Use Datahike's incremental transaction model. Instead of
-replaying from scratch, maintain the DB incrementally — transact only new
-events, and re-materialise only rules whose dependencies changed.
-
-**3. localStorage serialisation is fragile and unbounded.**
-
-`(pr-str snapshot)` serialises the entire state including all events as EDN.
-There's no:
-
-- Size limit or quota checking
-- Compression
-- Migration strategy (the key is `golova.state.v1` but there's no version
-  negotiation)
-- Error recovery beyond catching read failures
-
-A domain with 5000 events will produce a multi-MB EDN string. localStorage has
-a ~5MB limit per origin in most browsers. You'll hit this silently.
-
-**Recommendation:** Implement incremental persistence (append-only event log
-with periodic compaction), add quota detection, and consider IndexedDB for
-larger datasets.
-
-**4. The `proof.cljs` file mentioned in README doesn't exist.**
-
-The README references `proof.cljs` as "derivation explainer (proof trees,
-ready to surface)" but no such file exists in the source tree. This is
-misleading documentation.
-
-**5. No error boundaries or error recovery in the UI.**
-
-If `rebuild!` throws (which it does catch), the error is stored in `:error` but
-there's no UI feedback mechanism beyond a top-level error display. If a rule
-produces an unexpected schema, the entire app state is corrupted until a page
-reload. There's no undo mechanism despite having an event log that could
-support it.
-
-The new `pred-add-row` and `entity-add-form` do catch errors locally and
-display them inline, which is good. But the core rebuild path is still
-unprotected from the user's perspective.
-
-**6. The query parser is a security/injection vector.**
-
-`run-query` calls `reader/read-string` on user input, then passes the result to
-`d/q`. While this is a client-side app (so the blast radius is limited to the
-user's own data), a malformed query can corrupt the Datahike db or throw
-uncaught exceptions that leave the app in a broken state.
-
----
-
-### Design Tensions
-
-**1. "Types" are a UI fiction, not enforced by the engine.**
-
-Types are declared in `:schema` but never validated against the Datahike store.
-You can assert `[:bob :parent 42]` where `:parent` expects `[person person]`
-and the engine accepts it. The `coerce-value` function does some parsing but
-it's opt-in (only used by the form helper). This creates a confusing mental
-model: the UI suggests type safety that doesn't exist.
-
-The chip-editor and `new-type-form` make the type declaration experience
-significantly better — but they don't change the underlying tension. Types are
-still purely declarative metadata with no enforcement. The `type-value` pill
-rendering (color-coded by type) further reinforces the impression that types
-are "real" when they're not enforced at the data layer.
 
 **2. Naga is removed but still referenced.**
 
@@ -218,6 +290,12 @@ cycle. Fine for small domains, but could cause jank with large atom sets.
   offline capability.
 - **No undo.** The event log could support it trivially — every mutation is
   already tagged with an id and timestamp.
+- **No use of Datahike's compiled query engine.** Datahike has an experimental
+  compiled query planner (`query-engine.md`) with fused scan+merge, DP-ordered
+  index selection, and semi-naive fixpoint for recursive rules. It works on
+  CLJS. The hand-rolled `materialize-rules` duplicates some of this
+  functionality but misses the optimisations (predicate pushdown, cardinality
+  estimation, cost-based ordering).
 
 ---
 
@@ -227,15 +305,15 @@ The core idea is sound: Datalog + event-sourcing + static SPA is an excellent
 architecture for a local-first PKM tool. The Datahike choice and domain
 abstraction are well-motivated.
 
-The latest changes address several concrete UX gaps (type creation, table
-search/filter/sort, visual type indicators) with reasonably clean component
-boundaries (`table-toolbar`, `chip-editor`, `new-type-form` are all
-well-factored).
+The most impactful finding is that **Datahike's schema enforcement is bypassed
+by accident** — `d/empty-db` defaults to schema-on-read, making all the schema
+metadata dead code. A one-line fix (`{:schema-flexibility :write}`) would
+activate real type enforcement, cardinality validation, and uniqueness
+constraints. Combined with entity specs, this could turn the current "types
+are enums" model into a genuinely enforced schema system.
 
-The main risks are: (1) the monolithic `ui.cljs` that will become
-unmaintainable as features grow, (2) the full-rebuild-on-every-mutation
-performance cliff, and (3) the localStorage persistence that will hit limits
-with real usage. The `type-of-value` linear scan and `extend-type!`
-rebuild-on-every-add are concrete examples of how these architectural issues
-manifest in new code. These are all addressable without changing the fundamental
-architecture.
+The main structural risks are: (1) the monolithic `ui.cljs`, (2) the
+full-rebuild-on-every-mutation performance cliff, and (3) the localStorage
+persistence that will hit limits with real usage. Datahike's IndexedDB backend
+and incremental transaction model directly address (3) and (2) respectively —
+the infrastructure is there, it's just not wired up.
