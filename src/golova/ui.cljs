@@ -6,6 +6,7 @@
             [cljs.pprint]
             [reagent.core :as r]
             [datahike.core :as d]
+            [golova.csv :as csv]
             [golova.state :as state :refer [app-state]]
             [golova.storage :as storage]))
 
@@ -2052,6 +2053,152 @@
                         (state/close-modal!)))}
          "Create type"]]])))
 
+(defn- default-id-col
+  "Default identity column = the first one. Cheap and predictable; user
+  picks from the dropdown if they want something else."
+  [{:keys [headers]}]
+  (when (seq headers) 0))
+
+(defn csv-import-form
+  "Modal body for previewing and confirming a CSV import. `data` is the
+  parsed CSV ({:headers :rows}); `filename` is shown for context."
+  [{:keys [data filename]}]
+  (let [preview (state/csv-preview data)
+        new-label  (-> (or filename "imported")
+                       (str/replace #"\.csv$" "")
+                       (str/replace #"[_-]+" " ")
+                       str/trim)
+        ;; default to "new domain" — CSV imports almost always want a fresh
+        ;; namespace, not to mix into the currently-selected domain.
+        dom*    (r/atom :__new__)
+        new-dom (r/atom new-label)
+        id-idx* (r/atom (default-id-col data))
+        skip-empty?* (r/atom true)
+        msg     (r/atom nil)]
+    (fn [{:keys [data]}]
+      (let [domains (:domains @app-state)
+            id-idx @id-idx*
+            id-col (get (:columns preview) id-idx)
+            empty-col-idxs (set (for [[i c] (map-indexed vector (:columns preview))
+                                      :when (and (not= i id-idx)
+                                                 (zero? (:non-empty c)))]
+                                  i))
+            n-empty-cols (count empty-col-idxs)
+            drop-empty? (and @skip-empty?* (pos? n-empty-cols))
+            n-preds (- (dec (:col-count preview))
+                       (if drop-empty? n-empty-cols 0))
+            ;; only rows with a non-blank id column produce triples
+            keep-rows (filterv #(not (str/blank? (str/trim (nth % id-idx ""))))
+                               (:rows data))
+            n-entities (count (distinct
+                                (map #(str/trim (nth % id-idx "")) keep-rows)))
+            n-triples (reduce + 0
+                              (for [row keep-rows
+                                    [i v] (map-indexed vector row)
+                                    :when (and (not= i id-idx)
+                                               (not (str/blank? v))
+                                               (not (and drop-empty?
+                                                         (contains? empty-col-idxs i))))]
+                                1))
+            n-skipped (- (count (:rows data)) (count keep-rows))
+            create-new? (= :__new__ @dom*)
+            valid? (or (and (not create-new?) (contains? domains @dom*))
+                       (and create-new? (seq (str/trim @new-dom))))]
+        [:<>
+         [:h3 "Import CSV"]
+         [:div.modal-sub
+          (if filename [:span [:code filename] " — "])
+          (:row-count preview) " rows · "
+          (:col-count preview) " columns"]
+
+         [:div.field
+          [:label "Target domain"]
+          [:select.typed
+           {:value (if create-new? "__new__" (name @dom*))
+            :on-change (fn [e]
+                         (let [v (.. e -target -value)]
+                           (reset! dom* (if (= "__new__" v) :__new__ (keyword v)))))}
+           (for [[id d] (sort-by (comp str first) domains)]
+             ^{:key id} [:option {:value (name id)} (:label d)])
+           [:option {:value "__new__"}
+            (str "+ New domain: " new-label)]]
+          (when create-new?
+            [:input {:placeholder "domain name"
+                     :value @new-dom
+                     :on-change #(reset! new-dom (.. % -target -value))
+                     :style {:margin-top "6px"}}])]
+
+         [:div.field
+          [:label "Identity column"]
+          [:select.typed
+           {:value (str id-idx)
+            :on-change #(reset! id-idx* (js/parseInt (.. % -target -value) 10))}
+           (for [[i c] (map-indexed vector (:columns preview))]
+             ^{:key i}
+             [:option {:value (str i)}
+              (str (:name c) "  (" (:non-empty c) " non-empty, "
+                   (count (distinct (map #(str/trim (nth % i ""))
+                                         (:rows data)))) " distinct)")])]
+          [:div.modal-sub {:style {:margin-top "4px"}}
+           "Each row's "
+           [:code (:name id-col)] " becomes an atom keyword (slugified). "
+           "Rows with blank value here are skipped."]]
+
+         (when (pos? n-empty-cols)
+           [:div.field
+            [:label {:style {:display "flex" :align-items "center" :gap "8px"
+                             :cursor "pointer" :text-transform "none"
+                             :letter-spacing "0" :font-size "13px"
+                             :font-weight "normal" :color "var(--text)"}}
+             [:input {:type "checkbox"
+                      :checked @skip-empty?*
+                      :on-change #(reset! skip-empty?* (.. % -target -checked))}]
+             (str "Skip the " n-empty-cols " column"
+                  (when (not= 1 n-empty-cols) "s")
+                  " with no values")]])
+
+         [:div.modal-sub {:style {:margin-top "10px"}}
+          "Will create "
+          [:b n-preds] " predicate" (when (not= 1 n-preds) "s") ", "
+          [:b n-entities] " entit" (if (= 1 n-entities) "y" "ies") ", and "
+          [:b n-triples] " triple" (when (not= 1 n-triples) "s") "."
+          (when (pos? n-skipped)
+            [:span " " [:b n-skipped] " row"
+             (when (not= 1 n-skipped) "s") " skipped (blank "
+             [:code (:name id-col)] ")."])]
+
+         (when @msg
+           [:div.modal-sub
+            {:style {:color (case (:kind @msg) :err "var(--bad)" "var(--good)")}}
+            (:text @msg)])
+
+         [:div.modal-actions
+          [:button {:on-click state/close-modal!} "Cancel"]
+          [:button.primary
+           {:disabled (not valid?)
+            :on-click (fn []
+                        (let [;; drop empty cols if requested, remap id-idx
+                              [data* id-idx*]
+                              (if drop-empty?
+                                (let [keep-idxs (vec (remove empty-col-idxs
+                                                             (range (count (:headers data)))))
+                                      idx->new (zipmap keep-idxs (range))]
+                                  [{:headers (mapv #(nth (:headers data) %) keep-idxs)
+                                    :rows (mapv (fn [r] (mapv #(nth r % "") keep-idxs))
+                                                (:rows data))}
+                                   (idx->new id-idx)])
+                                [data id-idx])
+                              target (if create-new?
+                                       (state/create-domain! (str/trim @new-dom))
+                                       @dom*)
+                              result (state/import-csv! target data* id-idx*)]
+                          (state/select! {:kind :rules})
+                          (state/switch-domain! target)
+                          (state/close-modal!)
+                          (js/console.log
+                            "imported CSV:" (clj->js result))))}
+           "Import"]]]))))
+
 (defn modal []
   (let [m (:modal @app-state)]
     (when m
@@ -2073,6 +2220,9 @@
                           (let [lbl (read-field "domain-label")]
                             (when (seq lbl) (state/create-domain! lbl))
                             (state/close-modal!)))} "Create"]]]
+
+          :csv-import
+          [csv-import-form {:data (:data m) :filename (:filename m)}]
 
           :new-type
           [new-type-form (:domain m)]
@@ -2181,6 +2331,37 @@
                                           (.readAsText rdr f)))))
                               (.click inp)))}
                "Import…"]]]
+            [:div.settings-row
+             [:div.lbl "CSV"
+              [:div.hint "Import a CSV (e.g. a Notion DB export). Each row becomes an entity; each non-empty cell becomes a triple."]]
+             [:div
+              [:button
+               {:on-click (fn []
+                            (let [inp (.createElement js/document "input")]
+                              (set! (.-type inp) "file")
+                              (set! (.-accept inp) ".csv,text/csv")
+                              (set! (.-onchange inp)
+                                    (fn [e]
+                                      (when-let [f (-> e .-target .-files (aget 0))]
+                                        (let [rdr (js/FileReader.)]
+                                          (set! (.-onload rdr)
+                                                (fn [ev]
+                                                  (try
+                                                    (let [txt (.. ev -target -result)
+                                                          parsed (csv/parse txt)]
+                                                      (if (and (seq (:headers parsed))
+                                                               (seq (:rows parsed)))
+                                                        (state/open-modal!
+                                                          {:kind :csv-import
+                                                           :data parsed
+                                                           :filename (.-name f)})
+                                                        (js/alert "CSV looked empty.")))
+                                                    (catch :default ex
+                                                      (js/alert (str "Couldn't parse CSV: "
+                                                                     (.-message ex)))))))
+                                          (.readAsText rdr f)))))
+                              (.click inp)))}
+               "Import CSV…"]]]
             [:div.settings-row.danger
              [:div.lbl "Reset all data"
               [:div.hint "Wipes every domain, event, and saved query. Leaves Golova empty so you can start from scratch. This can't be undone."]]

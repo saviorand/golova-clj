@@ -22,6 +22,7 @@
             [cljs.reader :as reader]
             [reagent.core :as r]
             [datahike.core :as d]
+            [golova.csv :as csv]
             [golova.storage :as storage]))
 
 ;; ---------------------------------------------------------------------------
@@ -678,6 +679,95 @@
          :home {:onboarding-collapsed? true}
          :error nil)
   (save!))
+
+;; ---------------------------------------------------------------------------
+;; CSV import
+
+(defn- slugify
+  "Lowercase, replace non-alnum runs with dashes, trim leading/trailing dashes."
+  [s]
+  (-> (or s "") str/lower-case
+      (str/replace #"[^a-z0-9]+" "-")
+      (str/replace #"^-+|-+$" "")))
+
+(defn- col-type
+  "Infer a Golova arg type for a column from its non-empty values. v1
+  recognises 'int' (all values look like integers) or falls back to 'string'."
+  [values]
+  (let [non-empty (remove str/blank? values)]
+    (if (and (seq non-empty)
+             (every? #(re-matches #"-?\d+" (str/trim %)) non-empty))
+      "int"
+      "string")))
+
+(defn- transpose-cols [headers rows]
+  (mapv (fn [i] (mapv #(nth % i "") rows))
+        (range (count headers))))
+
+(defn csv-preview
+  "Inspect a parsed CSV and return per-column metadata + a row-count summary.
+  No state mutation — used to populate the import preview UI."
+  [{:keys [headers rows]}]
+  (let [cols-vals (transpose-cols headers rows)]
+    {:row-count (count rows)
+     :col-count (count headers)
+     :columns (mapv (fn [name vals]
+                      {:name name
+                       :slug (slugify name)
+                       :type (col-type vals)
+                       :non-empty (count (remove str/blank? vals))})
+                    headers
+                    cols-vals)}))
+
+(defn import-csv!
+  "Bulk-import a parsed CSV into `domain-id`. `id-idx` is the column index to
+  use as the entity ident. Each non-empty cell becomes a triple; each
+  non-id column becomes a declared predicate `[atom <inferred>]`. Single
+  rebuild at the end.
+
+  Returns {:rows :triples :predicates :skipped-rows}."
+  [domain-id parsed id-idx]
+  (let [{:keys [headers rows]} parsed
+        cols-vals (transpose-cols headers rows)
+        cols (mapv (fn [name vals]
+                     {:name name :slug (slugify name) :type (col-type vals)})
+                   headers cols-vals)
+        ;; assemble events. skip empty cells and rows whose ident is blank.
+        events (vec
+                (for [row rows
+                      :let [id-raw (nth row id-idx "")
+                            id-slug (slugify id-raw)]
+                      :when (seq id-slug)
+                      [i v] (map-indexed vector row)
+                      :when (and (not= i id-idx)
+                                 (not (str/blank? v)))
+                      :let [col (nth cols i)
+                            attr (keyword (:slug col))
+                            val (if (= "int" (:type col))
+                                  (js/parseInt (str/trim v) 10)
+                                  v)]]
+                  {:id (str (random-uuid))
+                   :at (.now js/Date)
+                   :op :assert
+                   :source "csv-import"
+                   :triple [(keyword id-slug) attr val]}))
+        new-preds (for [[i c] (map-indexed vector cols)
+                        :when (not= i id-idx)]
+                    {:name (:slug c) :argTypes ["atom" (:type c)]})
+        skipped (count (filter #(str/blank? (slugify (nth % id-idx ""))) rows))]
+    (swap! app-state update-in [:domains domain-id :schema :predicates]
+           (fn [ps]
+             (let [existing (set (map :name ps))]
+               (into (vec ps)
+                     (remove #(existing (:name %)) new-preds)))))
+    (swap! app-state update-in [:domains domain-id :events]
+           (fnil into []) events)
+    (rebuild!)
+    (save!)
+    {:rows (count rows)
+     :triples (count events)
+     :predicates (count new-preds)
+     :skipped-rows skipped}))
 
 (defn import-snapshot! [snap]
   (swap! app-state assoc
