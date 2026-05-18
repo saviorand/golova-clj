@@ -44,49 +44,31 @@ Datalog database) with localStorage persistence. ~3000 lines across 4 files.
 
 ### Critical Issues
 
-**1. Schema-on-read by accident — Datahike's validation is completely bypassed.**
+**1. ~~Schema-on-read by accident~~ — Fixed. Datahike schema enforcement is now active.**
 
-This is the most consequential finding. In `rebuild-domain`:
+`rebuild-domain` now passes `{:schema-flexibility :write}` to `d/empty-db`.
+All schema entries have explicit `:db/valueType` and `:db/cardinality`.
+Type validation, cardinality enforcement, and attribute existence checks are
+all active. The `arg-type->db-type` function maps UI arg types to Datahike
+types (`"int"` → `:db.type/long`, `"string"` → `:db.type/string`,
+`"atom"` / declared types → `:db.type/ref`).
+  defined and Datahike will reject it.
+- **Cardinality enforcement.** `:db.cardinality/one` attributes are enforced
+  by Datahike.
+- **Attribute existence.** Any attribute not in the schema is rejected at
+  transaction time with "not defined in current schema".
+- **Ref resolution.** `:db.type/ref` attributes resolve `:db/ident` keywords
+  to entity IDs properly.
 
-```clojure
-(let [schema (build-schema domain)
-      db0 (d/empty-db schema)
-```
-
-`d/empty-db` with no config map defaults to `:schema-flexibility :read`
-(Datahike's `storeless-config` in `config.cljc` line 143). This means:
-
-- **No type validation.** You can store `42` where a `:db.type/string` is
-  defined and Datahike won't complain.
-- **No cardinality enforcement.** `:db.cardinality/one` attributes silently
-  accept multiple values.
-- **No uniqueness constraints.** `:db.unique/identity` and `:db.unique/value`
-  are ignored.
-- **No ref resolution.** `:db.type/ref` attributes don't resolve `:db/ident`
-  keywords to entity IDs — they're stored as plain keywords.
-
-Datahike has a full schema-on-write mode (`:schema-flexibility :write`) that
-enforces all of these via `clojure.spec` predicates in `schema.cljc`
-(`value-valid?` checks `:db.type/string` → `string?`, `:db.type/long` → Long,
-etc.). It's the default when you use `d/create-database` — but `d/empty-db`
-bypasses it.
-
-**Fix:** Pass `{:schema-flexibility :write}` as the second arg to `d/empty-db`:
-
-```clojure
-(d/empty-db schema {:schema-flexibility :write})
-```
-
-This single change would activate real type enforcement, cardinality
-validation, uniqueness constraints, and proper ref resolution — turning the
-Datahike schema from dead metadata into a live constraint system.
-
-**2. "Types" are just enums — and even those aren't enforced.**
+**2. "Types" are just enums — but now enforced at the schema level.**
 
 Types are declared in `:schema` as named sets of keyword constructors (e.g.
-`person` = `alice | bob | carol`). They're enums, nothing more. They're never
-validated against the Datahike store — you can assert `[:bob :parent 42]`
-where `:parent` expects `[person person]` and the engine accepts it. The
+`person` = `alice | bob | carol`). They're enums, nothing more. Under the new
+`:write` mode, Datahike enforces that ref-typed predicates actually hold
+keywords (via `:db.type/ref`), and scalar predicates hold the right types
+(`:db.type/long` for ints, `:db.type/string` for strings). You can no longer
+assert `[:bob :parent 42]` where `:parent` expects `[person person]` —
+Datahike will reject it.
 `coerce-value` function does some parsing but it's opt-in (only used by the
 form helper).
 
@@ -95,10 +77,10 @@ completely unused:
 
 | Datahike feature | Status in Golova |
 |---|---|
-| `:db.type/ref` (entity references) | Used for some predicates, but refs aren't resolved (schema-on-read) |
-| `:db.type/string`, `:db.type/long`, etc. | Never declared — no value type enforcement |
-| `:db.cardinality/one` / `:many` | Set in `build-schema` but never enforced (schema-on-read) |
-| `:db.unique/identity` / `:unique/value` | Never used |
+| `:db.type/ref` (entity references) | ✅ Active — ref predicates and arity-2 rule heads declared with `:db.type/ref` |
+| `:db.type/string`, `:db.type/long`, etc. | ✅ Active — scalar predicates now declare explicit value types via `arg-type->db-type` |
+| `:db.cardinality/one` / `:many` | ✅ Active — enforced by Datahike under `:write` mode |
+| `:db.unique/identity` / `:unique/value` | Not used — could be useful for entity names |
 | `:db/isComponent` (cascading deletes) | Never used |
 | `:db/doc` (attribute documentation) | Never used |
 | `:db/index` (index hints) | Never used |
@@ -109,10 +91,8 @@ completely unused:
 | Schema migration (norms) | Not applicable (event-sourced rebuild) |
 
 The chip-editor and `new-type-form` make the enum declaration experience
-significantly better — but they don't change the underlying tension. Types are
-still purely declarative metadata with no enforcement. The `type-value` pill
-rendering (color-coded by type) further reinforces the impression that types
-are "real" when they're not enforced at the data layer.
+significantly better. The `type-value` pill rendering (color-coded by type)
+now corresponds to actual Datahike-enforced types.
 
 **What a richer type system could look like:**
 
@@ -122,7 +102,7 @@ Predicates could declare `:db.type/ref` with `:db/unique :db.unique/identity`
 so that lookup refs work correctly and the engine prevents duplicate entities.
 Scalar predicates could use `:db.type/long` or `:db.type/string` so that
 `42` can't be stored in a string field. This is all available in Datahike today
-— the infrastructure is there, it's just not wired up.
+— the infrastructure is there, and the basic enforcement is now wired up. Entity specs and uniqueness constraints are the next layer.
 
 **3. `rebuild!` is O(n²) and called on every mutation.**
 

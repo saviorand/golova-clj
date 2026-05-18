@@ -54,13 +54,9 @@
 ;; Schema bootstrap
 
 (def base-schema
-  "Always-present schema. Named entities are identified by Datahike's
-  built-in `:db/ident` attribute — so `:alice`, `:bob`, `:sf` etc. are
-  not just keyword values but resolve to the matching entity in
-  ref-typed positions.
-
-  `:note` is a markdown string attached to any entity (one per entity)."
-  {:note {:db/cardinality :db.cardinality/one}})
+  "Schema entries that are always present. Under :write mode every entry
+  must have :db/valueType + :db/cardinality."
+  {:note {:db/valueType :db.type/string :db/cardinality :db.cardinality/one}})
 
 (defn- ref-arg-type?
   "True if the named arg type stores references to named entities (atoms)
@@ -69,21 +65,30 @@
   (or (= "atom" arg-type)
       (contains? declared-type-names arg-type)))
 
+(defn- arg-type->db-type
+  "Map a UI arg-type string to a Datahike :db/valueType keyword.
+  Under :write mode every schema entry needs :db/valueType."
+  [arg-type declared-type-names]
+  (cond
+    (= "int" arg-type)    :db.type/long
+    (= "string" arg-type) :db.type/string
+    (= "atom" arg-type)   :db.type/ref
+    (contains? declared-type-names arg-type) :db.type/ref
+    :else :db.type/string))
+
 (defn- predicate-schema
   "Datahike schema entry for one declared user predicate.
 
-  Convention: arity-2 predicates store their first arg as the entity and
-  the second as the value of the attribute named after the predicate.
-  Relations (ref-typed values) get :db/valueType :db.type/ref + cardinality
-  :many. Scalar types (int, string) only need cardinality — Datahike
-  infers the value type at transact time."
+  Under :write mode every entry needs :db/valueType + :db/cardinality.
+  Ref-typed predicates get cardinality :many; scalar predicates get :one."
   [pred-name arg-types declared-type-names]
   (let [t2 (second arg-types)
         ref? (ref-arg-type? t2 declared-type-names)
-        cardinality (if ref? :db.cardinality/many :db.cardinality/one)]
+        cardinality (if ref? :db.cardinality/many :db.cardinality/one)
+        vt (arg-type->db-type t2 declared-type-names)]
     {(keyword pred-name)
-     (cond-> {:db/cardinality cardinality}
-       ref? (assoc :db/valueType :db.type/ref))}))
+     {:db/valueType vt
+      :db/cardinality cardinality}}))
 
 (defn- rule-head-attrs
   "Map of {attr-kw arity} for each rule head, so we can auto-install
@@ -114,11 +119,12 @@
                                   (for [[a arity] rule-heads
                                         :when (not (contains? pred-entries a))]
                                     (case arity
-                                      ;; arity-1: boolean flag, cardinality :one
-                                      1 {a {:db/cardinality :db.cardinality/one}}
-                                      ;; arity-2: ref relation, cardinality :many
-                                      2 {a {:db/cardinality :db.cardinality/many
-                                            :db/valueType :db.type/ref}})))]
+                                      ;; arity-1: boolean flag
+                                      1 {a {:db/valueType :db.type/boolean
+                                            :db/cardinality :db.cardinality/one}}
+                                      ;; arity-2: ref relation
+                                      2 {a {:db/valueType :db.type/ref
+                                            :db/cardinality :db.cardinality/many}})))]
     (merge base-schema pred-entries rule-head-entries)))
 
 ;; ---------------------------------------------------------------------------
@@ -143,11 +149,30 @@
 ;; ---------------------------------------------------------------------------
 ;; Build / rebuild a domain's db from its event log
 
-(defn- apply-tx [db tx]
-  (try (d/db-with db tx)
-       (catch :default e
-         (js/console.warn "tx failed:" tx (.-message e))
-         db)))
+(defn- apply-tx
+  "Apply tx to db. On success returns [db' rejections]. On schema
+  validation failure, returns [db rejections] — the db is unchanged
+  and the rejection is recorded for UI display."
+  [db tx rejections]
+  (try
+    (let [db' (d/db-with db tx)]
+      [db' rejections])
+    (catch :default e
+      (let [msg (or (.-message e) (str e))
+            data (ex-data e)]
+        (js/console.warn "tx failed:" tx msg)
+        [db (conj (or rejections [])
+                  {:message msg
+                   :error-type (:error data)
+                   :attribute (:attribute data)
+                   :value (:value data)
+                   :context (:context data)})]))))
+
+(defn- apply-tx-discard
+  "Legacy: apply tx, discard rejections. Used for ctor bootstrap and imports
+  where we don't need to report errors."
+  [db tx]
+  (first (apply-tx db tx nil)))
 
 (defn- import-tx
   "Tx-data to copy facts from a source domain into the importing one,
@@ -214,30 +239,38 @@
 
 (defn- rebuild-domain
   "Rebuild :db from scratch: empty db with schema, then replay the event
-  log (asserts + retracts), then any cross-domain imports."
+  log (asserts + retracts), then any cross-domain imports. Collects
+  schema validation rejections for UI display."
   [domain all-domains]
   (try
     (let [schema (build-schema domain)
-          db0 (d/empty-db schema)
+          db0 (d/empty-db schema {:schema-flexibility :write})
           ;; ensure declared type constructors exist as atoms
           ctor-tx (for [t (get-in domain [:schema :types])
                         c (:constructors t)]
                     {:db/ident (keyword c)})
-          db1 (if (seq ctor-tx) (apply-tx db0 (vec ctor-tx)) db0)
+          db1 (if (seq ctor-tx) (apply-tx-discard db0 (vec ctor-tx)) db0)
+          rejections (atom [])
           db2 (reduce
                 (fn [db {:keys [op triple]}]
                   (case op
-                    :assert  (apply-tx db (triple->tx triple))
-                    :retract (apply-tx db (triple->retract-tx triple))
+                    :assert
+                    (let [[db' rej] (apply-tx db (triple->tx triple) @rejections)]
+                      (reset! rejections rej)
+                      db')
+                    :retract
+                    (apply-tx-discard db (triple->retract-tx triple))
                     db))
                 db1
                 (:events domain))
-          db3 (apply-tx db2 (import-tx all-domains (:imports domain)))
+          db3 (apply-tx-discard db2 (import-tx all-domains (:imports domain)))
           db4 (materialize-rules db3 (:rules domain))]
-      (assoc domain :db db4 :db-schema schema :build-error nil))
+      (assoc domain :db db4 :db-schema schema
+             :build-error nil
+             :rejections (vec @rejections)))
     (catch :default e
       (js/console.error "rebuild failed:" (or (.-message e) (str e)))
-      (assoc domain :build-error (or (.-message e) (str e))))))
+      (assoc domain :build-error (or (.-message e) (str e)) :rejections []))))
 
 (defn rebuild! []
   (let [doms (:domains @app-state)
@@ -247,6 +280,29 @@
     (swap! app-state assoc :domains doms')
     (let [errors (->> (vals doms') (keep :build-error))]
       (swap! app-state assoc :error (when (seq errors) (first errors))))))
+
+(defn attr-schema-info
+  "Return the Datahike schema entry for attribute `attr` in the given domain,
+  or nil if the attribute has no schema entry. Useful for UI to display
+  valueType / cardinality badges."
+  [domain-id attr]
+  (let [schema (get-in @app-state [:domains domain-id :db-schema])]
+    (get schema (keyword attr))))
+
+(defn db-type-label
+  "Human-readable label for a Datahike :db/valueType keyword."
+  [vt]
+  (case vt
+    :db.type/ref     "ref"
+    :db.type/long    "int"
+    :db.type/string  "string"
+    :db.type/boolean "bool"
+    :db.type/float   "float"
+    :db.type/double  "double"
+    :db.type/keyword "keyword"
+    :db.type/uuid    "uuid"
+    :db.type/instant "instant"
+    (str vt)))
 
 ;; ---------------------------------------------------------------------------
 ;; Events

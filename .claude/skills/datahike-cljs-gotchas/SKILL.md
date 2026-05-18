@@ -9,9 +9,10 @@ Datahike's `datahike.core` namespace works in CLJS but has real bugs and
 schema-validation rules that aren't obvious. The patterns Golova settled
 on are below; deviate from them at your peril.
 
-## Schema: `:db/valueType` is more restrictive than Datomic
+## Schema: `:db/valueType` is restricted in `:read` mode
 
-Only `:db.type/ref` and `:db.type/tuple` are accepted. Trying
+In **schema-on-read** mode (`:schema-flexibility :read`), only `:db.type/ref`
+and `:db.type/tuple` are accepted for `:db/valueType`. Trying
 `{:age {:db/valueType :db.type/long}}` throws:
 
 ```
@@ -19,16 +20,19 @@ Bad attribute specification for {:age {:db/valueType :db.type/long}},
 expected one of #{:db.type/tuple :db.type/ref}
 ```
 
-The fix: **omit `:db/valueType` for scalars**. Datahike infers the type from
-the transacted value. Only declare `:db/valueType :db.type/ref` for
-attributes that point at other entities. See `predicate-schema` in
+In **schema-on-write** mode (`:schema-flexibility :write`), ALL value types
+are accepted (`:db.type/string`, `:db.type/long`, `:db.type/boolean`, etc.)
+and every schema entry MUST have both `:db/valueType` and `:db/cardinality`.
+
+Golova uses `:write` mode. See `predicate-schema` and `arg-type->db-type` in
 `state.cljs`.
 
-## `:db/cardinality` is the one schema field you do need
+## `:db/cardinality` and `:db/valueType` are required in `:write` mode
 
-Without an entry, an attribute defaults to cardinality `:one` — which silently
-overwrites prior values. Declare `:many` for any relation that allows
-multiple values (parent, in-genre, etc.).
+Under `:schema-flexibility :write`, every attribute in the schema must have
+both `:db/valueType` and `:db/cardinality`. Omitting either causes
+`validate-write-schema` to reject the entire schema. Attributes not in the
+schema are rejected at transaction time with "not defined in current schema".
 
 ## Named entities: `:db/ident`, not `:atom/name`
 

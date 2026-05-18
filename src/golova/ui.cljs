@@ -847,7 +847,21 @@
                "Stored facts"
                [:span.count-hint (count rows) " total"
                 (when (> (count filtered) 200) (str " · showing first 200 of "
-                                                    (count filtered)))]]
+                                                    (count filtered)))]
+               (let [rj (:rejections d)]
+                 (when (seq rj)
+                   [:span.rejection-count
+                    (str " · " (count rj) " rejected by schema")]))]
+              (let [rj (:rejections d)]
+                (when (seq rj)
+                  [:div.rejection-warnings
+                   (for [[i r] (map-indexed vector (take 5 rj))]
+                     ^{:key i}
+                     [:div.rej-item
+                      [:span.rej-attr (str (or (:attribute r) ""))]
+                      [:span.rej-msg (:message r)]])
+                   (when (> (count rj) 5)
+                     [:div.rej-more (str "+ " (- (count rj) 5) " more")])]))
               [table-toolbar
                {:state-atom table-state
                 :provs-present provs-present
@@ -1081,6 +1095,13 @@
           (if declared
             [:span.pill.declared "declared"]
             [:span.pill "discovered"])
+          (let [si (state/attr-schema-info domain-id attr)]
+            (when si
+              [:span.pill.schema-badge
+               (str (state/db-type-label (:db/valueType si))
+                    " · "
+                    (if (= :db.cardinality/many (:db/cardinality si))
+                      "many" "one"))]))
           [move-to-pill domain-id
            (fn [src dst] (state/move-predicate! src dst name arity))]
           [:div.actions-right
@@ -1213,6 +1234,7 @@
             [:span.desc (count schema-ctors) " value"
              (when (not= 1 (count schema-ctors)) "s")]
             [:span.pill.declared "type"]
+            [:span.pill.schema-badge "ref · many"]
             [move-to-pill domain-id
              (fn [src dst] (state/move-type! src dst name))]
             [:div.actions-right
@@ -1618,11 +1640,11 @@
     (fn [domain-id]
       [:<>
        [:h3 "New type"]
-       [:div.modal-sub "A named union of values, e.g. "
+       [:div.modal-sub "A named enum of keyword values, e.g. "
         [:code "person"] " = "
         [:code "alice | bob | carol"]
-        ". Constructors drive form dropdowns when this type is used as a "
-        "predicate argument."]
+        ". When used as a predicate arg type, the predicate stores "
+        [:code ":db.type/ref"] " references to these constructors."]
        [:div.field
         [:label "Name"]
         [:input {:placeholder "e.g. person"
