@@ -790,6 +790,20 @@ table.facts thead th .sort-arrow { color: var(--accent); margin-left: 4px; font-
 .type-value.type-project  { background: var(--good-soft);    color: var(--good); }
 .type-value.type-task-status { background: var(--warn-soft); color: var(--warn); }
 
+/* scalar pills — distinct from enum pills: monospace, low contrast */
+.type-value.type-scalar {
+  font-family: var(--code-font);
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 0 6px;
+}
+.type-value.type-int    { color: var(--accent);   border-color: var(--accent-soft); }
+.type-value.type-float  { color: var(--accent);   border-color: var(--accent-soft); }
+.type-value.type-string { color: var(--text); font-family: var(--sans-font); }
+.type-value.type-bool   { color: var(--accent-2); border-color: var(--accent-2-soft); }
+
 /* note backlinks on entity page */
 .backlinks { margin: 32px 0 12px; padding-top: 16px; border-top: 1px solid var(--border); }
 .backlink-row {
