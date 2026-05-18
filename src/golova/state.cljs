@@ -396,7 +396,9 @@
 (defn load-or-seed! [backend]
   (let [snap (storage/-load backend)]
     (swap! app-state assoc :backend backend)
-    (if (and snap (seq (:domains snap)))
+    (if snap
+      ;; Returning user: load their state as-is. An empty :domains map is a
+      ;; valid choice (post-reset) — don't re-seed the starter.
       (swap! app-state assoc
              :current-domain (:current-domain snap)
              :selection (or (:selection snap) {:kind :home})
@@ -404,7 +406,8 @@
              :expanded (set (:expanded snap))
              :expanded-subs (set (map vec (:expanded-subs snap)))
              :home (merge {:onboarding-collapsed? true} (:home snap))
-             :domains (:domains snap))
+             :domains (or (:domains snap) {}))
+      ;; First run: seed the starter so there's something to look at.
       (let [id :starter]
         (swap! app-state assoc
                :domains {id (starter-domain id "Starter")}
@@ -657,17 +660,23 @@
 ;; ---------------------------------------------------------------------------
 ;; Reset / import
 
-(defn reset-all! []
+(defn reset-all!
+  "Wipe everything: every domain, the event log, all UI state. Lands on
+  Home with no current domain so the user can create one from scratch."
+  []
   (when-let [b (:backend @app-state)] (storage/-clear b))
   (swap! app-state assoc
-         :domains {} :current-domain nil
-         :selection {:kind :rules} :expanded #{} :expanded-subs #{} :error nil)
-  (let [id :starter]
-    (swap! app-state assoc
-           :domains {id (starter-domain id "Starter")}
-           :current-domain id
-           :expanded #{}))
-  (rebuild!)
+         :domains {}
+         :current-domain nil
+         :selection {:kind :home}
+         :expanded #{}
+         :expanded-subs #{}
+         :top-query {:text "" :result nil}
+         :modal nil
+         :popover nil
+         :palette nil
+         :home {:onboarding-collapsed? true}
+         :error nil)
   (save!))
 
 (defn import-snapshot! [snap]

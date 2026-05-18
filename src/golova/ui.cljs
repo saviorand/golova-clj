@@ -2183,11 +2183,11 @@
                "Import…"]]]
             [:div.settings-row.danger
              [:div.lbl "Reset all data"
-              [:div.hint "Wipes every domain and replaces with the starter program. This can't be undone."]]
+              [:div.hint "Wipes every domain, event, and saved query. Leaves Golova empty so you can start from scratch. This can't be undone."]]
              [:div
               [:button.ghost.danger
                {:on-click (fn []
-                            (when (js/confirm "Wipe everything and reset to the starter? This can't be undone.")
+                            (when (js/confirm "Wipe all domains and start empty? This can't be undone.")
                               (state/reset-all!)
                               (state/close-modal!)))}
                "Reset"]]]]
