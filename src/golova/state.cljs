@@ -42,7 +42,7 @@
     :last-saved nil
     :error nil
     :first-run? false
-    :home {:onboarding-collapsed? false}}))
+    :home {:onboarding-collapsed? true}}))
 
 (defn current []
   (let [s @app-state]
@@ -403,7 +403,7 @@
              :theme (or (:theme snap) :light)
              :expanded (set (:expanded snap))
              :expanded-subs (set (map vec (:expanded-subs snap)))
-             :home (merge {:onboarding-collapsed? false} (:home snap))
+             :home (merge {:onboarding-collapsed? true} (:home snap))
              :domains (:domains snap))
       (let [id :starter]
         (swap! app-state assoc
@@ -738,6 +738,27 @@
          (fn [qs] (vec (remove #(= name (:name %)) (or qs [])))))
   (save!))
 
+(defn toggle-pin-query!
+  "Flip the :pinned? flag on a saved query. Pinned queries surface on the
+  Home view with inline results."
+  [domain-id name]
+  (swap! app-state update-in [:domains domain-id :schema :queries]
+         (fn [qs]
+           (mapv (fn [q] (if (= name (:name q))
+                           (update q :pinned? not)
+                           q))
+                 (or qs []))))
+  (save!))
+
+(defn pinned-queries
+  "Seq of {:domain-id :name :text} for every saved query with :pinned?
+  true, across all domains."
+  []
+  (vec (for [[id d] (:domains @app-state)
+             q (get-in d [:schema :queries])
+             :when (:pinned? q)]
+         {:domain-id id :name (:name q) :text (:text q)})))
+
 ;; ---------------------------------------------------------------------------
 ;; Triple inspection (callers in ui.cljs)
 
@@ -833,6 +854,21 @@
                                   (re-find re text))
                          [from text]))))
              (sort-by first))))))
+
+;; ---------------------------------------------------------------------------
+;; Cross-domain recent-activity feed
+
+(defn recent-events
+  "Return the most recent `n` events across all domains, sorted by :at
+  descending. Each item is the original event map augmented with
+  :domain-id. Skips seeded events (those with :at = 0)."
+  [n]
+  (->> (for [[id d] (:domains @app-state)
+             evt (:events d)
+             :when (pos? (:at evt 0))]
+         (assoc evt :domain-id id))
+       (sort-by :at >)
+       (take n)))
 
 ;; ---------------------------------------------------------------------------
 ;; Provenance — derived from the event log

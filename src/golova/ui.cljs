@@ -517,7 +517,7 @@
     [:div.subsection {:class (str (when (zero? n) "empty ")
                                   (when expanded? "expanded"))
                       :on-click on-toggle}
-     [:span.chev "▸"]
+     [:span.chev]
      [:span.lbl label]
      [:span.scount n]
      (when add-fn
@@ -525,8 +525,9 @@
         {:title (str "Add " label)
          :on-click (fn [e] (.stopPropagation e) (add-fn))} "+"])]))
 
-(defn- nav-item [{:keys [active? icon icon-tooltip label meta on-click]}]
-  [:div.nav-item {:class (when active? "active")
+(defn- nav-item [{:keys [active? icon icon-tooltip label meta on-click extra-class]}]
+  [:div.nav-item {:class (str (when active? "active")
+                              (when extra-class (str " " extra-class)))
                   :on-click on-click}
    (if icon-tooltip
      [:span.icon {:title icon-tooltip} icon]
@@ -563,15 +564,16 @@
         {:title "New domain"
          :on-click #(state/open-modal! {:kind :new-domain})}
         "+"]]
-      (for [[id d] (sort-by (comp str first) domains)
-            :let [exp? (contains? (or expanded #{}) id)
-                  active-domain? (= id current-domain)
-                  preds (domain-predicates d)
-                  decl-pred (filter :declared? preds)
-                  disc-pred (filter (complement :declared?) preds)
-                  rules (domain-rules d)
-                  types (get-in d [:schema :types])
-                  queries (get-in d [:schema :queries])]]
+      (doall
+       (for [[id d] (sort-by (comp str first) domains)
+             :let [exp? (contains? (or expanded #{}) id)
+                   active-domain? (= id current-domain)
+                   preds (domain-predicates d)
+                   decl-pred (filter :declared? preds)
+                   disc-pred (filter (complement :declared?) preds)
+                   rules (domain-rules d)
+                   types (get-in d [:schema :types])
+                   queries (get-in d [:schema :queries])]]
         ^{:key (str "d-" (name id))}
         [:div.domain-block
          [:div.domain-header
@@ -581,7 +583,7 @@
                          (state/toggle-domain! id)
                          (do (state/switch-domain! id)
                              (state/expand-domain! id))))}
-          [:span.chev "▸"]
+          [:span.chev]
           [:span.name (:label d)]
           [:button.row-menu
            {:title "Domain menu"
@@ -594,6 +596,14 @@
            (let [all-preds (concat decl-pred disc-pred)
                  notes (state/entities-with-notes id)]
              [:div.domain-body
+              [nav-item
+               {:active? (and active-domain? (= :rules (:kind selection)))
+                :icon "≡"
+                :icon-tooltip "Domain overview: program editor + all stored facts"
+                :label "Rules / facts"
+                :extra-class "overview"
+                :on-click #(do (state/switch-domain! id)
+                               (state/select! {:kind :rules}))}]
               (sub {:label "Types" :items types
                     :expanded? (sub-exp? id :types)
                     :on-toggle #(state/toggle-subsection! id :types)
@@ -687,13 +697,7 @@
                        :icon "✎"
                        :label (fmt-val n)
                        :on-click #(do (state/switch-domain! id)
-                                      (state/select! {:kind :entity :name n}))}]))])
-              [nav-item
-               {:active? (and active-domain? (= :rules (:kind selection)))
-                :icon "ƒ"
-                :label "Rules / facts"
-                :on-click #(do (state/switch-domain! id)
-                               (state/select! {:kind :rules}))}]]))])]
+                                      (state/select! {:kind :entity :name n}))}]))])]))]))]
 
      ;; footer
      [:div.sidebar-footer
@@ -747,6 +751,205 @@
     [:span.def "Any entity can have a markdown note. Use "
      [:code "[[wikilink]]"] " syntax inside a note to link to another atom."]]])
 
+(defn- fmt-relative
+  "Render a millisecond timestamp as 'just now', 'Nm ago', 'Nh ago',
+  'Nd ago', or 'MMM D'."
+  [ms]
+  (let [now (.now js/Date)
+        diff (max 0 (- now ms))
+        s (quot diff 1000)]
+    (cond
+      (< s 45)     "just now"
+      (< s 3600)   (str (max 1 (quot s 60)) "m ago")
+      (< s 86400)  (str (quot s 3600) "h ago")
+      (< s 604800) (str (quot s 86400) "d ago")
+      :else        (let [d (js/Date. ms)]
+                     (.toLocaleDateString d "en-US"
+                                          #js {:month "short" :day "numeric"})))))
+
+(defn- parse-scratch-input
+  "Read a textarea blob as `[ … ]` of EDN forms. Returns
+  {:triples [...] :err nil} or {:triples [] :err msg}. Each accepted
+  triple must be a 3-vector."
+  [text]
+  (try
+    (let [parsed (when-not (str/blank? text)
+                   (reader/read-string (str "[" text "]")))
+          triples (filterv #(and (vector? %) (= 3 (count %))) parsed)
+          skipped (- (count parsed) (count triples))]
+      (cond
+        (empty? triples)
+        {:triples [] :err "No valid triples. Each line should be like [:s :p :o]."}
+        (pos? skipped)
+        {:triples triples :err (str skipped " input(s) skipped (not 3-vectors).")}
+        :else {:triples triples :err nil}))
+    (catch :default e
+      {:triples [] :err (or (.-message e) (str e))})))
+
+(defn quick-scratch
+  "Compact form for asserting one or more triples into a chosen domain.
+  Each line of the textarea is an EDN triple `[:s :p :v]`. Ctrl/Cmd-Enter
+  commits; Add button does too."
+  []
+  (let [text  (r/atom "")
+        msg   (r/atom nil)     ;; {:kind :ok|:err :text "…"}
+        dom   (r/atom nil)]    ;; nil → fall back to current-domain at render
+    (fn []
+      (let [{:keys [domains current-domain]} @app-state
+            target (or @dom current-domain (first (sort (keys domains))))
+            commit (fn []
+                     (let [{:keys [triples err]} (parse-scratch-input @text)]
+                       (cond
+                         (and (empty? triples) err)
+                         (reset! msg {:kind :err :text err})
+
+                         (nil? target)
+                         (reset! msg {:kind :err :text "No domain — create one first."})
+
+                         :else
+                         (let [attrs (set (map (comp keyword second) triples))
+                               _ (doseq [tr triples]
+                                   (state/assert-triple! target tr "scratch"))
+                               rejs (get-in @app-state
+                                            [:domains target :rejections])
+                               my-rejs (filter #(contains? attrs (:attribute %))
+                                               rejs)]
+                           (reset! text "")
+                           (if (seq my-rejs)
+                             (reset! msg
+                                     {:kind :err
+                                      :text (str (count my-rejs) " of "
+                                                 (count triples)
+                                                 " rejected — "
+                                                 (-> my-rejs first :message))})
+                             (reset! msg
+                                     {:kind :ok
+                                      :text (str "added " (count triples)
+                                                 " fact"
+                                                 (when (not= 1 (count triples)) "s")
+                                                 (when err (str " · " err)))}))))))]
+        [:div.quick-scratch
+         [:div.qs-head
+          [:span.qs-label "Quick add to"]
+          [:select.qs-domain
+           {:value (or (some-> target name) "")
+            :disabled (empty? domains)
+            :on-change #(reset! dom (keyword (.. % -target -value)))}
+           (for [[id d] (sort-by (comp str first) domains)]
+             ^{:key id} [:option {:value (name id)} (:label d)])]
+          [:span.qs-hint "one triple per line: "
+           [:code "[:alice :parent :bob]"]]]
+         [:textarea.qs-input
+          {:value @text
+           :rows 3
+           :placeholder "[:alice :likes :coffee]\n[:alice :age 30]"
+           :spellCheck "false"
+           :on-change #(do (reset! text (.. % -target -value))
+                           (reset! msg nil))
+           :on-key-down (fn [e]
+                          (when (and (= "Enter" (.-key e))
+                                     (or (.-metaKey e) (.-ctrlKey e)))
+                            (.preventDefault e)
+                            (commit)))}]
+         [:div.qs-foot
+          (when @msg
+            [:span.qs-status {:class (name (:kind @msg))} (:text @msg)])
+          [:span.qs-kbd [:kbd "⌘↵"]]
+          [:button.primary.small
+           {:disabled (str/blank? @text)
+            :on-click commit}
+           "Add"]]]))))
+
+(defn- pinned-query-card
+  "Render one pinned query: header (name + domain pill, click → query page)
+  and top N inline result rows."
+  [{:keys [domain-id name]}]
+  (let [d (get-in @app-state [:domains domain-id])
+        q (first (filter #(= name (:name %)) (get-in d [:schema :queries])))
+        result (when q (state/run-query domain-id (:text q)))
+        cap 5]
+    [:div.pinned-card
+     [:div.pq-head
+      [:a.pq-name {:on-click #(do (state/switch-domain! domain-id)
+                                  (state/select! {:kind :query :name name}))}
+       name]
+      [:span.pq-dom (:label d)]
+      (when-not (:error result)
+        [:span.pq-count
+         (count (:rows result)) " result"
+         (when (not= 1 (count (:rows result))) "s")])]
+     (cond
+       (:error result)
+       [:div.pq-error (str "error: " (:error result))]
+
+       (empty? (:rows result))
+       [:div.pq-empty "no solutions"]
+
+       :else
+       (let [ctor-map (constructor-type-map domain-id)
+             shown (take cap (:rows result))]
+         [:div.pq-rows
+          (for [[i row] (map-indexed vector shown)]
+            ^{:key i}
+            [:div.pq-row
+             (for [[k v] (map vector (:vars result) row)]
+               ^{:key k}
+               [:span.pq-bind
+                [:span.pq-k k] " " [type-value ctor-map v]])])
+          (when (> (count (:rows result)) cap)
+            [:div.pq-more
+             {:on-click #(do (state/switch-domain! domain-id)
+                             (state/select! {:kind :query :name name}))}
+             "+ " (- (count (:rows result)) cap) " more"])]))]))
+
+(defn pinned-queries-section
+  "Home section listing pinned queries with inline results."
+  []
+  (let [pins (state/pinned-queries)]
+    (if (empty? pins)
+      [:div.empty-state
+       "No pinned queries yet. Open a saved query and click "
+       [:b "Pin to Home"] " to surface its results here."]
+      [:div.pinned-list
+       (doall
+        (for [{:keys [domain-id name] :as p} pins]
+          ^{:key (str (clojure.core/name domain-id) "/" name)}
+          [pinned-query-card p]))])))
+
+(defn activity-feed
+  "List of recent events across all domains, with relative timestamps and
+  links into the predicate / entity pages."
+  []
+  (let [s @app-state
+        events (state/recent-events 15)]
+    [:div.activity-feed
+     (cond
+       (empty? (:domains s))
+       [:div.empty-state "Create a domain to start logging activity."]
+
+       (empty? events)
+       [:div.empty-state "No activity yet. Use the scratch above to add a fact."]
+
+       :else
+       (doall
+        (for [{:keys [id at op triple domain-id source]} events
+              :let [d (get-in s [:domains domain-id])
+                    ctor-map (constructor-type-map domain-id)
+                    [e a v] triple]]
+          ^{:key id}
+          [:div.activity-row {:class (str "op-" (name op))}
+           [:span.act-when {:title (.toLocaleString (js/Date. at))}
+            (fmt-relative at)]
+           [:span.act-dom {:on-click #(state/switch-domain! domain-id)}
+            (:label d)]
+           [:span.act-op (case op :assert "+" :retract "−" (name op))]
+           [:span.act-triple
+            [:span.act-sub (atom-link e)]
+            " " [pred-link a] " "
+            [:span.act-obj [type-value ctor-map v]]]
+           (when source
+             [:span.act-src {:title (str "source: " source)} source])])))]))
+
 (defn home-view []
   (let [s @app-state
         collapsed? (get-in s [:home :onboarding-collapsed?])]
@@ -758,6 +961,25 @@
        [:h1 "Golova"]
        [:p.tagline "A small, no-server PKM built on Datahike. "
         "Triples, rules, derivations — your knowledge as a graph."]]]
+
+     [:div.home-grid
+      [:div.section-card
+       [:div.section-card-head
+        [:h3 "Quick add"]]
+       [:div.section-card-body
+        [quick-scratch]]]
+
+      [:div.section-card
+       [:div.section-card-head
+        [:h3 "Recent activity"]]
+       [:div.section-card-body
+        [activity-feed]]]]
+
+     [:div.section-card
+      [:div.section-card-head
+       [:h3 "Pinned queries"]]
+      [:div.section-card-body
+       [pinned-queries-section]]]
 
      [:div.section-card
       [:div.section-card-head
@@ -938,7 +1160,8 @@
                         [header 3 "source"]
                         [:th ""]]]
                [:tbody
-                (for [{:keys [e a v tr prov]} capped]
+                (doall
+                 (for [{:keys [e a v tr prov]} capped]
                   (let [pred-si (state/attr-schema-info domain-id a)
                         pred-title (if pred-si
                                      (str (name a) " — "
@@ -962,7 +1185,7 @@
                         [:button.ghost.danger
                          {:title "Retract this fact"
                           :on-click #(state/retract-triple! domain-id (vec tr))}
-                         "×"])]]))]]]))]))))
+                         "×"])]])))]]]))]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Predicate table view
@@ -1448,9 +1671,17 @@
            [:div.view-head
             [:h2.mono (:name q)]
             [:span.pill "saved query"]
+            (when (:pinned? q)
+              [:span.pill.pinned {:title "Pinned to Home"} "pinned"])
             [move-to-pill domain-id
              (fn [src dst] (state/move-query! src dst (:name q)))]
             [:div.actions-right
+             [:button.ghost.small
+              {:title (if (:pinned? q)
+                        "Unpin from Home"
+                        "Pin to Home — show inline results on the Home page")
+               :on-click #(state/toggle-pin-query! domain-id (:name q))}
+              (if (:pinned? q) "Unpin" "Pin to Home")]
              [:button.ghost.danger
               {:on-click (fn []
                            (when (js/confirm (str "Delete saved query " (:name q) "?"))
