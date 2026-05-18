@@ -155,6 +155,12 @@
    :program  "prov-program"
    :imported "prov-imported"})
 
+(def ^:private provenance-tooltips
+  {:event    "Asserted via the UI or imported snapshot. Lives in the event log; can be retracted."
+   :derived  "Materialised by a rule from other facts. Cannot be retracted directly — change the rule or its inputs."
+   :program  "Came from the program text (set-rules! / scratch editor)."
+   :imported "Imported from another domain via cross-domain imports."})
+
 (defn- row-matches?
   "Substring case-insensitive match across stringified row cells."
   [query row]
@@ -207,6 +213,8 @@
           [:button.prov-toggle
            {:class (str (provenance-colors p)
                         (when (contains? (:provs st) p) " on"))
+            :title (str "Filter to " (name p) " facts only. "
+                        (provenance-tooltips p))
             :on-click #(swap! state-atom update :provs
                               (fn [s] (let [s (or s #{})]
                                         (if (contains? s p) (disj s p) (conj s p)))))}
@@ -232,21 +240,32 @@
           [c (:name t)])))
 
 (defn type-value
-  "Render a cell value with a type-aware visual treatment. Cases:
+  "Render a cell value with a type-aware visual treatment and a hover
+  tooltip describing the value's runtime type. Cases:
   - declared enum constructor → colored pill labeled with the type name
   - integer / float / string / bool → subtle scalar pill
-  - keyword (atom, no declared type) → plain atom-link
+  - keyword (atom, no declared type) → plain atom-link wrapped so we can
+    attach the tooltip
   `ctor-map` is the {name-str → type-name-str} lookup for the domain."
   [ctor-map v]
   (cond
     (and (keyword? v) (get ctor-map (name v)))
-    [:span.type-value {:class (str "type-" (get ctor-map (name v)))}
-     (atom-link v)]
+    (let [tn (get ctor-map (name v))]
+      [:span.type-value {:class (str "type-" tn)
+                         :title (str "constructor of type `" tn "` (ref)")}
+       (atom-link v)])
 
-    (boolean? v)  [:span.type-value.type-scalar.type-bool   (str v)]
-    (integer? v)  [:span.type-value.type-scalar.type-int    (str v)]
-    (number? v)   [:span.type-value.type-scalar.type-float  (str v)]
-    (string? v)   [:span.type-value.type-scalar.type-string v]
+    (boolean? v)
+    [:span.type-value.type-scalar.type-bool   {:title "bool"} (str v)]
+    (integer? v)
+    [:span.type-value.type-scalar.type-int    {:title "int (long)"} (str v)]
+    (number? v)
+    [:span.type-value.type-scalar.type-float  {:title "float / double"} (str v)]
+    (string? v)
+    [:span.type-value.type-scalar.type-string {:title "string"} v]
+
+    (keyword? v)
+    [:span {:title "atom (ref) — untyped keyword"} (atom-link v)]
 
     :else (atom-link v)))
 
@@ -506,10 +525,12 @@
         {:title (str "Add " label)
          :on-click (fn [e] (.stopPropagation e) (add-fn))} "+"])]))
 
-(defn- nav-item [{:keys [active? icon label meta on-click]}]
+(defn- nav-item [{:keys [active? icon icon-tooltip label meta on-click]}]
   [:div.nav-item {:class (when active? "active")
                   :on-click on-click}
-   [:span.icon icon]
+   (if icon-tooltip
+     [:span.icon {:title icon-tooltip} icon]
+     [:span.icon icon])
    [:span.name.mono label]
    (when meta [:span.meta meta])])
 
@@ -606,6 +627,9 @@
                                   (= (:name p) (:name selection))
                                   (= (:arity p) (:arity selection)))
                     :icon (if (:declared? p) "▦" "▢")
+                    :icon-tooltip (if (:declared? p)
+                                    "Declared — arg types are in this domain's schema."
+                                    "Discovered — facts exist but no declared arg types.")
                     :label (str (:name p) "/" (:arity p))
                     :meta (count (:facts p))
                     :on-click #(do (state/switch-domain! id)
@@ -915,18 +939,30 @@
                         [:th ""]]]
                [:tbody
                 (for [{:keys [e a v tr prov]} capped]
-                  ^{:key (pr-str tr)}
-                  [:tr
-                   [:td (atom-link e)]
-                   [:td [pred-link a]]
-                   [:td [type-value ctor-map v]]
-                   [:td [:span.pill {:class (str "prov-" (name prov))} (name prov)]]
-                   [:td.delete
-                    (when (= :event prov)
-                      [:button.ghost.danger
-                       {:title "Retract this fact"
-                        :on-click #(state/retract-triple! domain-id (vec tr))}
-                       "×"])]])]]]))]))))
+                  (let [pred-si (state/attr-schema-info domain-id a)
+                        pred-title (if pred-si
+                                     (str (name a) " — "
+                                          (state/db-type-label (:db/valueType pred-si))
+                                          " · "
+                                          (if (= :db.cardinality/many
+                                                 (:db/cardinality pred-si))
+                                            "many" "one"))
+                                     (str (name a) " — no schema entry (discovered)"))]
+                    ^{:key (pr-str tr)}
+                    [:tr
+                     [:td [:span {:title "entity (atom — :db/ident keyword)"}
+                           (atom-link e)]]
+                     [:td [:span {:title pred-title} [pred-link a]]]
+                     [:td [type-value ctor-map v]]
+                     [:td [:span.pill {:class (str "prov-" (name prov))
+                                       :title (provenance-tooltips prov)}
+                           (name prov)]]
+                     [:td.delete
+                      (when (= :event prov)
+                        [:button.ghost.danger
+                         {:title "Retract this fact"
+                          :on-click #(state/retract-triple! domain-id (vec tr))}
+                         "×"])]]))]]]))]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Predicate table view
@@ -1132,15 +1168,26 @@
           [:span.desc (count all-triples) " fact"
            (when (not= 1 (count all-triples)) "s")]
           (if declared
-            [:span.pill.declared "declared"]
-            [:span.pill "discovered"])
+            [:span.pill.declared
+             {:title "This predicate's arg types are declared in the domain's schema."}
+             "declared"]
+            [:span.pill
+             {:title (str "This attribute exists in stored facts but has no declared "
+                          "arg types. Click 'Declare types' below to add a schema entry.")}
+             "discovered"])
           (let [si (state/attr-schema-info domain-id attr)]
             (when si
-              [:span.pill.schema-badge
-               (str (state/db-type-label (:db/valueType si))
-                    " · "
-                    (if (= :db.cardinality/many (:db/cardinality si))
-                      "many" "one"))]))
+              (let [vt (:db/valueType si)
+                    card (:db/cardinality si)
+                    vt-label (state/db-type-label vt)
+                    many? (= :db.cardinality/many card)]
+                [:span.pill.schema-badge
+                 {:title (str "Datahike value type: " vt-label
+                              " (" (clojure.core/name vt) "). Cardinality: "
+                              (if many?
+                                "many — a single entity may hold many values for this attribute."
+                                "one — only one value per entity (overwrites on re-assert)."))}
+                 (str vt-label " · " (if many? "many" "one"))])))
           [move-to-pill domain-id
            (fn [src dst] (state/move-predicate! src dst name arity))]
           [:div.actions-right
