@@ -232,15 +232,23 @@
           [c (:name t)])))
 
 (defn type-value
-  "Render a value with a small type-name pill prefix when the value is a
-  constructor of a declared type — gives bigger tables much more visual
-  scanning structure. `ctor-map` is a {name-str → type-name-str} lookup
-  built once per render via `constructor-type-map`."
+  "Render a cell value with a type-aware visual treatment. Cases:
+  - declared enum constructor → colored pill labeled with the type name
+  - integer / float / string / bool → subtle scalar pill
+  - keyword (atom, no declared type) → plain atom-link
+  `ctor-map` is the {name-str → type-name-str} lookup for the domain."
   [ctor-map v]
-  (if-let [tn (and (keyword? v) (get ctor-map (name v)))]
-    [:span.type-value {:class (str "type-" tn)}
+  (cond
+    (and (keyword? v) (get ctor-map (name v)))
+    [:span.type-value {:class (str "type-" (get ctor-map (name v)))}
      (atom-link v)]
-    (atom-link v)))
+
+    (boolean? v)  [:span.type-value.type-scalar.type-bool   (str v)]
+    (integer? v)  [:span.type-value.type-scalar.type-int    (str v)]
+    (number? v)   [:span.type-value.type-scalar.type-float  (str v)]
+    (string? v)   [:span.type-value.type-scalar.type-string v]
+
+    :else (atom-link v)))
 
 (defn chip-editor
   "Pill-based list editor. `state-atom` holds a vector of strings.
