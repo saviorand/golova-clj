@@ -637,6 +637,30 @@ a.atom-link.pred-link:hover {
 button.add-note { margin-bottom: 20px; color: var(--dim); font-size: 12px; }
 button.add-note:hover { color: var(--accent); }
 
+/* schema badge + rejection warnings */
+.pill.schema-badge {
+  background: var(--panel-2); color: var(--muted); font-size: 11px;
+  font-family: var(--code-font); letter-spacing: .03em;
+  padding: 2px 8px; border-radius: 10px;
+}
+.rejection-count { color: var(--warn); font-size: 12px; font-weight: 500; }
+.rejection-warnings {
+  margin: 8px 0 12px; padding: 8px 12px;
+  background: var(--warn-soft); border: 1px solid var(--warn);
+  border-radius: 6px; font-size: 12.5px;
+}
+.rej-item {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 3px 0; border-bottom: 1px solid var(--border);
+}
+.rej-item:last-child { border-bottom: none; }
+.rej-attr {
+  font-family: var(--code-font); font-size: 11.5px;
+  color: var(--accent); white-space: nowrap;
+}
+.rej-msg { color: var(--dim); flex: 1; }
+.rej-more { color: var(--dim); font-size: 11px; padding-top: 4px; }
+
 /* chip editor */
 .chip-editor {
   background: var(--bg); border: 1px solid var(--border-strong);
