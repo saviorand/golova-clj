@@ -172,17 +172,19 @@
                                     row)))]
         (str/includes? stringy q))))
 
-(defn- sort-rows
-  "Sort rows by the given column index. `dir` is :asc, :desc, or nil."
-  [rows col dir]
-  (if-not (and col dir)
-    rows
-    (let [k (fn [r] (let [v (nth r col nil)]
-                      (cond
-                        (keyword? v) (str (namespace v) "/" (name v))
-                        :else (str v))))]
-      (vec ((if (= dir :desc) #(reverse (sort-by k %)) #(sort-by k %))
-            rows)))))
+(defn sort-key
+  "Comparable sort key for a cell value. Numbers compare numerically;
+  strings and keywords sort within their own bucket; nil sorts last. The
+  rank prefix keeps cross-type compares from throwing on heterogeneous
+  columns."
+  [v]
+  (cond
+    (nil? v)     [9 ""]
+    (number? v)  [0 v]
+    (boolean? v) [1 (if v 1 0)]
+    (keyword? v) [2 (str (namespace v) "/" (name v))]
+    (string? v)  [3 v]
+    :else        [3 (str v)]))
 
 (defn table-toolbar
   "Renders a search input, provenance filter pills, and a row-count summary.
@@ -480,11 +482,15 @@
 ;; Sidebar — domain tree
 
 (defn- sub
-  "Header row for a subsection within an expanded domain block. The caller
-  renders the items themselves immediately after."
-  [label items add-fn]
+  "Collapsible header row for a subsection within an expanded domain block.
+  Caller renders the items only when `expanded?` is true; clicking the bar
+  fires `on-toggle`. The `+` button (if `add-fn` given) does not toggle."
+  [{:keys [label items add-fn expanded? on-toggle]}]
   (let [n (count items)]
-    [:div.subsection {:class (when (zero? n) "empty")}
+    [:div.subsection {:class (str (when (zero? n) "empty ")
+                                  (when expanded? "expanded"))
+                      :on-click on-toggle}
+     [:span.chev "▸"]
      [:span.lbl label]
      [:span.scount n]
      (when add-fn
@@ -500,8 +506,9 @@
    (when meta [:span.meta meta])])
 
 (defn sidebar []
-  (let [{:keys [domains current-domain selection expanded]} @app-state
-        on-home? (= :home (:kind selection))]
+  (let [{:keys [domains current-domain selection expanded expanded-subs]} @app-state
+        on-home? (= :home (:kind selection))
+        sub-exp? (fn [id k] (contains? (or expanded-subs #{}) [id k]))]
     [:aside
      ;; brand
      [:div.brand
@@ -555,82 +562,106 @@
                          {:kind :domain-menu :domain id} e))}
            "⋯"]]
          (when exp?
-           [:div.domain-body
-            (sub "Types" types
-                 (fn [] (state/open-modal! {:kind :new-type :domain id})))
-            (for [t types]
-              ^{:key (str "t-" (:name t))}
-              [nav-item
-               {:active? (and active-domain?
-                              (= :type (:kind selection))
-                              (= (:name t) (:name selection)))
-                :icon "◆"
-                :label (:name t)
-                :meta (count (:constructors t))
-                :on-click #(do (state/switch-domain! id)
-                               (state/select! {:kind :type :name (:name t)}))}])
-            (sub "Predicates" (concat decl-pred disc-pred)
-                 (fn [] (state/open-modal! {:kind :new-predicate :domain id})))
-            (for [p (concat decl-pred disc-pred)]
-              ^{:key (str "p-" (:name p) "/" (:arity p))}
-              [nav-item
-               {:active? (and active-domain?
-                              (= :predicate (:kind selection))
-                              (= (:name p) (:name selection))
-                              (= (:arity p) (:arity selection)))
-                :icon (if (:declared? p) "▦" "▢")
-                :label (str (:name p) "/" (:arity p))
-                :meta (count (:facts p))
-                :on-click #(do (state/switch-domain! id)
-                               (state/select! {:kind :predicate
-                                               :name (:name p)
-                                               :arity (:arity p)}))}])
-            (sub "Rules" rules
-                 (fn [] (state/open-modal! {:kind :new-rule :domain id})))
-            (for [r rules]
-              ^{:key (str "r-" (:name r) "/" (:arity r))}
-              [nav-item
-               {:active? (and active-domain?
-                              (= :rule (:kind selection))
-                              (= (:name r) (:name selection)))
-                :icon "ƒ"
-                :label (str (:name r) "/" (:arity r))
-                :meta (when (> (count (:clauses r)) 1)
-                        (count (:clauses r)))
-                :on-click #(do (state/switch-domain! id)
-                               (state/select! {:kind :rule :name (:name r)}))}])
-            (sub "Queries" queries
-                 (fn [] (state/open-modal! {:kind :new-query :domain id})))
-            (for [q queries]
-              ^{:key (str "q-" (:name q))}
-              [nav-item
-               {:active? (and active-domain?
-                              (= :query (:kind selection))
-                              (= (:name q) (:name selection)))
-                :icon "?"
-                :label (:name q)
-                :on-click #(do (state/switch-domain! id)
-                               (state/select! {:kind :query :name (:name q)}))}])
-            (let [notes (state/entities-with-notes id)]
+           (let [all-preds (concat decl-pred disc-pred)
+                 notes (state/entities-with-notes id)]
+             [:div.domain-body
+              (sub {:label "Types" :items types
+                    :expanded? (sub-exp? id :types)
+                    :on-toggle #(state/toggle-subsection! id :types)
+                    :add-fn (fn []
+                              (state/expand-subsection! id :types)
+                              (state/open-modal! {:kind :new-type :domain id}))})
+              (when (sub-exp? id :types)
+                (for [t types]
+                  ^{:key (str "t-" (:name t))}
+                  [nav-item
+                   {:active? (and active-domain?
+                                  (= :type (:kind selection))
+                                  (= (:name t) (:name selection)))
+                    :icon "◆"
+                    :label (:name t)
+                    :meta (count (:constructors t))
+                    :on-click #(do (state/switch-domain! id)
+                                   (state/select! {:kind :type :name (:name t)}))}]))
+              (sub {:label "Predicates" :items all-preds
+                    :expanded? (sub-exp? id :predicates)
+                    :on-toggle #(state/toggle-subsection! id :predicates)
+                    :add-fn (fn []
+                              (state/expand-subsection! id :predicates)
+                              (state/open-modal! {:kind :new-predicate :domain id}))})
+              (when (sub-exp? id :predicates)
+                (for [p all-preds]
+                  ^{:key (str "p-" (:name p) "/" (:arity p))}
+                  [nav-item
+                   {:active? (and active-domain?
+                                  (= :predicate (:kind selection))
+                                  (= (:name p) (:name selection))
+                                  (= (:arity p) (:arity selection)))
+                    :icon (if (:declared? p) "▦" "▢")
+                    :label (str (:name p) "/" (:arity p))
+                    :meta (count (:facts p))
+                    :on-click #(do (state/switch-domain! id)
+                                   (state/select! {:kind :predicate
+                                                   :name (:name p)
+                                                   :arity (:arity p)}))}]))
+              (sub {:label "Rules" :items rules
+                    :expanded? (sub-exp? id :rules)
+                    :on-toggle #(state/toggle-subsection! id :rules)
+                    :add-fn (fn []
+                              (state/expand-subsection! id :rules)
+                              (state/open-modal! {:kind :new-rule :domain id}))})
+              (when (sub-exp? id :rules)
+                (for [r rules]
+                  ^{:key (str "r-" (:name r) "/" (:arity r))}
+                  [nav-item
+                   {:active? (and active-domain?
+                                  (= :rule (:kind selection))
+                                  (= (:name r) (:name selection)))
+                    :icon "ƒ"
+                    :label (str (:name r) "/" (:arity r))
+                    :meta (when (> (count (:clauses r)) 1)
+                            (count (:clauses r)))
+                    :on-click #(do (state/switch-domain! id)
+                                   (state/select! {:kind :rule :name (:name r)}))}]))
+              (sub {:label "Queries" :items queries
+                    :expanded? (sub-exp? id :queries)
+                    :on-toggle #(state/toggle-subsection! id :queries)
+                    :add-fn (fn []
+                              (state/expand-subsection! id :queries)
+                              (state/open-modal! {:kind :new-query :domain id}))})
+              (when (sub-exp? id :queries)
+                (for [q queries]
+                  ^{:key (str "q-" (:name q))}
+                  [nav-item
+                   {:active? (and active-domain?
+                                  (= :query (:kind selection))
+                                  (= (:name q) (:name selection)))
+                    :icon "?"
+                    :label (:name q)
+                    :on-click #(do (state/switch-domain! id)
+                                   (state/select! {:kind :query :name (:name q)}))}]))
               (when (seq notes)
                 [:<>
-                 (sub "Notes" notes nil)
-                 (for [n notes]
-                   ^{:key (str "n-" (name n))}
-                   [nav-item
-                    {:active? (and active-domain?
-                                   (= :entity (:kind selection))
-                                   (= n (:name selection)))
-                     :icon "✎"
-                     :label (fmt-val n)
-                     :on-click #(do (state/switch-domain! id)
-                                    (state/select! {:kind :entity :name n}))}])]))
-            [nav-item
-             {:active? (and active-domain? (= :rules (:kind selection)))
-              :icon "ƒ"
-              :label "Rules / facts"
-              :on-click #(do (state/switch-domain! id)
-                             (state/select! {:kind :rules}))}]])])]
+                 (sub {:label "Notes" :items notes
+                       :expanded? (sub-exp? id :notes)
+                       :on-toggle #(state/toggle-subsection! id :notes)})
+                 (when (sub-exp? id :notes)
+                   (for [n notes]
+                     ^{:key (str "n-" (name n))}
+                     [nav-item
+                      {:active? (and active-domain?
+                                     (= :entity (:kind selection))
+                                     (= n (:name selection)))
+                       :icon "✎"
+                       :label (fmt-val n)
+                       :on-click #(do (state/switch-domain! id)
+                                      (state/select! {:kind :entity :name n}))}]))])
+              [nav-item
+               {:active? (and active-domain? (= :rules (:kind selection)))
+                :icon "ƒ"
+                :label "Rules / facts"
+                :on-click #(do (state/switch-domain! id)
+                               (state/select! {:kind :rules}))}]]))])]
 
      ;; footer
      [:div.sidebar-footer
@@ -831,7 +862,7 @@
                               (let [k (case col-cur 0 :e 1 :a 2 :v 3 :prov nil)]
                                 (if k
                                   (vec ((if (= dir :desc) reverse identity)
-                                        (sort-by (comp str k) filtered)))
+                                        (sort-by (comp sort-key k) filtered)))
                                   filtered))
                               filtered))
                  capped (take 200 filtered)
@@ -1082,7 +1113,7 @@
                          (let [k (case col-cur 0 :e 1 :v 2 :prov nil)]
                            (if k
                              (vec ((if (= dir :desc) reverse identity)
-                                   (sort-by (comp str k) filtered)))
+                                   (sort-by (comp sort-key k) filtered)))
                              filtered))
                          filtered))
             sort-cur (:col-cur sort)
@@ -1631,6 +1662,72 @@
 (defn- read-field [id]
   (some-> (.getElementById js/document (str "f-" (name id))) .-value str/trim))
 
+(defn- arg-type-options
+  "List of arg-type strings available in the given domain: the built-ins
+  plus every declared (enum) type."
+  [domain-id]
+  (let [declared (->> (get-in @app-state [:domains domain-id :schema :types])
+                      (map :name)
+                      sort)]
+    (vec (concat ["atom" "int" "string"] declared))))
+
+(defn new-predicate-form
+  "Form-2 component for declaring a new predicate. Dynamic list of per-arg
+  dropdowns populated from the built-in arg types plus the domain's
+  declared types."
+  [{:keys [domain preset-name]}]
+  (let [pname (r/atom (or preset-name ""))
+        args  (r/atom ["atom" "atom"])]
+    (fn [{:keys [domain]}]
+      (let [opts (arg-type-options domain)
+            valid? (and (seq (str/trim @pname)) (seq @args))]
+        [:<>
+         [:h3 "New predicate"]
+         [:div.modal-sub "A typed relation. Each arg picks its type from "
+          "the built-ins (" [:code "atom"] ", " [:code "int"] ", "
+          [:code "string"] ") or any declared type in this domain."]
+         [:div.field
+          [:label "Name"]
+          [:input {:placeholder "e.g. age"
+                   :value @pname
+                   :auto-focus true
+                   :on-change #(reset! pname (.. % -target -value))}]]
+         [:div.field
+          [:label "Arg types"]
+          [:div.arg-rows
+           (for [[i t] (map-indexed vector @args)]
+             ^{:key i}
+             [:div.arg-row
+              [:span.arg-idx (str "arg " (inc i))]
+              [:select.typed
+               {:value t
+                :on-change (fn [e]
+                             (let [v (.. e -target -value)]
+                               (swap! args assoc i v)))}
+               (for [o opts] ^{:key o} [:option {:value o} o])]
+              (when (> (count @args) 1)
+                [:button.ghost.small
+                 {:title "Remove arg"
+                  :on-click #(swap! args (fn [xs]
+                                           (vec (concat (subvec xs 0 i)
+                                                        (subvec xs (inc i))))))}
+                 "×"])])
+           [:button.ghost.small
+            {:on-click #(swap! args conj "atom")}
+            "+ add arg"]]]
+         [:div.modal-actions
+          [:button {:on-click state/close-modal!} "Cancel"]
+          [:button.primary
+           {:disabled (not valid?)
+            :on-click (fn []
+                        (let [n (str/trim @pname)]
+                          (when valid?
+                            (state/declare-predicate! domain n @args)
+                            (state/select! {:kind :predicate :name n
+                                            :arity (count @args)}))
+                          (state/close-modal!)))}
+           "Declare"]]]))))
+
 (defn new-type-form
   "Form-2 component for creating a new type. Name field + chip-editor for
   constructors, with auto-suggest of existing untyped atoms in the domain."
@@ -1695,29 +1792,8 @@
           [new-type-form (:domain m)]
 
           :new-predicate
-          [:<>
-           [:h3 "New predicate"]
-           [:div.modal-sub "A typed relation. Args may be declared types or "
-            [:code "int"] " / " [:code "string"] " / " [:code "atom"] "."]
-           [text-field {:label "Name" :id "pred-name" :placeholder "e.g. age"
-                        :default (:preset-name m)}]
-           [text-field {:label "Arg types (comma-separated)" :id "pred-types"
-                        :placeholder "e.g. person, int"}]
-           [:div.modal-actions
-            [:button {:on-click state/close-modal!} "Cancel"]
-            [:button.primary
-             {:on-click (fn []
-                          (let [name (read-field "pred-name")
-                                types (->> (read-field "pred-types")
-                                           (#(str/split (or % "") #","))
-                                           (map str/trim)
-                                           (remove str/blank?))]
-                            (when (and (seq name) (seq types))
-                              (state/declare-predicate! (:domain m) name (vec types))
-                              (state/select! {:kind :predicate :name name
-                                              :arity (count types)}))
-                            (state/close-modal!)))}
-             "Declare"]]]
+          [new-predicate-form {:domain (:domain m)
+                               :preset-name (:preset-name m)}]
 
           :new-rule
           [:<>

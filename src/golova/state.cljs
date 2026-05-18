@@ -36,6 +36,7 @@
     :selection {:kind :home}
     :theme :light
     :expanded #{}
+    :expanded-subs #{}
     :modal nil
     :top-query {:text "" :result nil}
     :last-saved nil
@@ -339,6 +340,7 @@
    :selection (:selection state)
    :theme (:theme state)
    :expanded (vec (:expanded state))
+   :expanded-subs (vec (:expanded-subs state))
    :home (:home state)
    :domains (into {}
                   (for [[id d] (:domains state)]
@@ -400,6 +402,7 @@
              :selection (or (:selection snap) {:kind :home})
              :theme (or (:theme snap) :light)
              :expanded (set (:expanded snap))
+             :expanded-subs (set (map vec (:expanded-subs snap)))
              :home (merge {:onboarding-collapsed? false} (:home snap))
              :domains (:domains snap))
       (let [id :starter]
@@ -432,6 +435,19 @@
 
 (defn expand-domain! [id]
   (swap! app-state update :expanded (fnil conj #{}) id)
+  (save!))
+
+(defn toggle-subsection!
+  "Toggle expanded state for one [domain-id sub-key] subsection in the sidebar."
+  [domain-id sub-key]
+  (let [k [domain-id sub-key]]
+    (swap! app-state update :expanded-subs
+           (fn [s] (let [s (or s #{})]
+                     (if (contains? s k) (disj s k) (conj s k))))))
+  (save!))
+
+(defn expand-subsection! [domain-id sub-key]
+  (swap! app-state update :expanded-subs (fnil conj #{}) [domain-id sub-key])
   (save!))
 
 (defn set-theme! [t]
@@ -645,7 +661,7 @@
   (when-let [b (:backend @app-state)] (storage/-clear b))
   (swap! app-state assoc
          :domains {} :current-domain nil
-         :selection {:kind :rules} :expanded #{} :error nil)
+         :selection {:kind :rules} :expanded #{} :expanded-subs #{} :error nil)
   (let [id :starter]
     (swap! app-state assoc
            :domains {id (starter-domain id "Starter")}
@@ -661,6 +677,7 @@
          :selection (or (:selection snap) {:kind :rules})
          :theme (or (:theme snap) (:theme @app-state))
          :expanded (set (:expanded snap))
+         :expanded-subs (set (map vec (:expanded-subs snap)))
          :error nil)
   (when (and (:current-domain @app-state)
              (not (contains? (:domains @app-state) (:current-domain @app-state))))

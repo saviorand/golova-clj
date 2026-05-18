@@ -158,10 +158,18 @@ aside {
 .domain-header .row-menu:hover { background: var(--panel-3); color: var(--text); }
 
 .subsection {
-  padding: 8px 18px 2px 38px; font-size: 10.5px; color: var(--dim);
+  padding: 8px 18px 2px 28px; font-size: 10.5px; color: var(--dim);
   text-transform: uppercase; letter-spacing: .04em; font-weight: 500;
   display: flex; align-items: center; gap: 6px;
+  cursor: pointer;
+  user-select: none;
 }
+.subsection:hover { color: var(--text); }
+.subsection .chev {
+  display: inline-block; width: 10px; font-size: 9px;
+  color: var(--muted); transition: transform .12s ease;
+}
+.subsection.expanded .chev { transform: rotate(90deg); }
 .subsection .lbl { white-space: nowrap; }
 .subsection .scount { color: var(--dim); font-weight: 400; }
 .subsection .sub-add {
@@ -344,6 +352,26 @@ a.atom-link:hover {
 }
 .modal-card .modal-actions {
   display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px;
+}
+.modal-card .arg-rows {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.modal-card .arg-row {
+  display: flex; align-items: center; gap: 8px;
+}
+.modal-card .arg-row .arg-idx {
+  font-size: 11px; color: var(--muted); width: 44px;
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.modal-card .arg-row select.typed {
+  flex: 1; min-width: 0;
+}
+.modal-card .arg-row .ghost.small,
+.modal-card .arg-rows > .ghost.small {
+  padding: 4px 8px; font-size: 12px;
+}
+.modal-card .arg-rows > .ghost.small {
+  align-self: flex-start; margin-top: 2px;
 }
 
 .view .empty {
