@@ -714,7 +714,10 @@
       []
       (let [ident-of (fn [eid]
                        (or (:v (first (d/datoms db :eavt eid :db/ident))) eid))
-            hidden? #{:db/ident :domain-label :in-domain :domain-parent :label}]
+            ;; Hide purely-organisational attrs from the user-facing facts
+            ;; table; keep :label (it's the human-readable string for atoms
+            ;; created by convert-to-refs and shows as their actual content).
+            hidden? #{:db/ident :domain-label :in-domain :domain-parent}]
         (->> (d/datoms db :eavt)
              (remove #(hidden? (:a %)))
              (mapv (fn [d]
@@ -1216,8 +1219,11 @@
                              (conj without
                                    {:name enum-type-name
                                     :constructors (mapv #(name (val %)) kw-for)
-                                    :domain (or source-pred-domain
-                                                target-domain)}))
+                                    ;; Enum type belongs in the domain
+                                    ;; where its constructor atoms live —
+                                    ;; not where the predicate is declared.
+                                    :domain (or target-domain
+                                                source-pred-domain)}))
                            (get-in @app-state [:schema :types]))]
     ;; Apply all changes + rebuild
     (swap! app-state
@@ -1379,12 +1385,15 @@
      :queries-added (count queries)}))
 
 (defn predicate-fact-count
-  "Number of distinct facts currently in the db under `attr`."
+  "Number of distinct facts currently in the db under `attr`. Uses the
+  :aevt index — :avet is only populated for ref / indexed / unique attrs,
+  so plain string/long predicates would otherwise read as 0 and get
+  swept up by `cleanup-empty-predicates!`."
   [attr]
   (let [db (:db @app-state)]
     (if-not db
       0
-      (count (d/datoms db :avet (keyword attr))))))
+      (count (d/datoms db :aevt (keyword attr))))))
 
 (defn cleanup-empty-predicates!
   "Drop every declared predicate whose attribute has zero facts in the db.

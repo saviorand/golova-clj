@@ -138,6 +138,27 @@ filtering all datoms:
 `d/q` is also fine but for the entity-page mention list and similar
 single-entity lookups, datom access is simpler and faster.
 
+### `:avet` only has refs and indexed/unique attrs
+
+Counter-intuitive trap: `(d/datoms db :avet :first-name)` returns **0**
+even when there are 62 first-name facts in the store. The `:avet` index
+(value-attribute-entity, sorted by value) is only populated for attrs
+that are `:db.type/ref`, or carry `:db/index true`, or `:db/unique`.
+Plain `:db.type/string` / `:db.type/long` attrs only live in `:eavt` /
+`:aevt`.
+
+For counting / iterating facts under a given attribute regardless of
+value type, **always use `:aevt`**:
+
+```clojure
+(count (d/datoms db :aevt :first-name))  ;; correct
+(count (d/datoms db :avet :first-name))  ;; 0 unless ref/indexed/unique
+```
+
+This bit `cleanup-empty-predicates!` once — counted via :avet, saw 0 for
+every string-typed predicate, dropped them all, leaving the events
+orphaned and the next rebuild rejected everything.
+
 ## Test before assuming
 
 Datahike's CLJS port lags the JVM version. If something compiles but

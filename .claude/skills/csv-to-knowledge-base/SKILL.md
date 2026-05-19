@@ -18,6 +18,11 @@ For a CSV named e.g. `People.csv`, produce three things:
 3. **`<name>-program.edn`** — rules + saved queries. Example: `examples/people-db-program.edn`.
 
 User applies in order via Settings → Apply plan → Import rules & queries.
+**Order matters**: the cleanup plan creates the new domains (Organizations,
+Places, etc.) by converting predicates. The program then references those
+domains. Apply the program before the plan and any `:domain "Organizations"`
+entries in the program will spawn empty phantom domains via
+`find-or-create-domain!`.
 
 ## Step 1 — inspect the CSV
 

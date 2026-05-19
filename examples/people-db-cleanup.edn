@@ -33,7 +33,11 @@
   :to-domain "Roles" :enum "role"}
 
  ;; --- in-domain enums (refs that stay in People) -------------------------
- {:op :convert :attr :priority        :to-domain :same :enum "priority"}
+ ;; Priority intentionally NOT converted — Notion People DBs commonly use
+ ;; a numeric scale (1–4) for priority, which gets imported as :db.type/long
+ ;; and queries cleanly as `[?p :priority 1]`. Uncomment if your priority
+ ;; column has categorical values like "High"/"Medium"/"Low" instead.
+ ;; {:op :convert :attr :priority     :to-domain :same :enum "priority"}
  {:op :convert :attr :reach-out       :to-domain :same :enum "yes-no"}
  {:op :convert :attr :i-did-not-reply :to-domain :same :enum "yes-no"}
  {:op :convert :attr :title           :to-domain :same :enum "title"}

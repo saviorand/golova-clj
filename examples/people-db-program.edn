@@ -38,16 +38,18 @@
             [?b :source ?s]]}
 
   ;; --- arity-1 flags -------------------------------------------------
-  ;; Inner circle = high priority AND I should reach out
+  ;; Inner circle = top priority AND I should reach out.
+  ;; Numeric priority (1 = highest); change to :high if you converted
+  ;; :priority to a categorical enum.
   {:domain "People"
    :clause [(inner-circle ?p)
-            [?p :priority :high]
+            [?p :priority 1]
             [?p :reach-out :yes]]}
 
-  ;; High-value = high priority alone
+  ;; High-value = top priority alone
   {:domain "People"
    :clause [(high-value ?p)
-            [?p :priority :high]]}
+            [?p :priority 1]]}
 
   ;; Stale = I haven't replied AND haven't flagged to ping
   {:domain "People"
@@ -56,8 +58,8 @@
 
  :queries
  [;; --- direct lookups ------------------------------------------------
-  {:domain "People" :name "high priority"
-   :text "[?p :priority :high]"}
+  {:domain "People" :name "top priority"
+   :text "[?p :priority 1]"}
 
   {:domain "People" :name "to reach out"
    :text "[?p :reach-out :yes]"}
@@ -79,11 +81,16 @@
   {:domain "People" :name "shared-expertise pairs"
    :text "(peer ?a ?b)"}
 
-  ;; --- cross-domain joins (use the :label fact on ref atoms) ---------
+  ;; --- cross-domain joins (work only after the cleanup plan ran) ------
+  ;; These rely on the :label fact that convert-predicate-to-refs adds.
+  ;; Without the cleanup plan they return nothing — but they won't error.
+  ;; Filed under People so the program is self-contained (won't spawn
+  ;; empty Organizations / Places / Topics domains on its own).
+
   ;; People × org-label — shows the human-readable org for each affiliation
   {:domain "People" :name "people × org"
    :text "[?p :affiliations ?o] [?o :label ?org-name]"}
 
-  ;; All orgs by label
-  {:domain "Organizations" :name "all orgs"
+  ;; All :label atoms, regardless of which domain they live in
+  {:domain "People" :name "all labeled atoms"
    :text "[?o :label ?name]"}]}

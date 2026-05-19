@@ -5,6 +5,7 @@
             [reagent.dom.client :as rdom]
             [golova.state :as state :refer [app-state]]
             [golova.storage :as storage]
+            [golova.router :as router]
             [golova.ui :as ui]))
 
 ;; ---------------------------------------------------------------------------
@@ -55,6 +56,9 @@
     (swap! app-state assoc :device-id (storage/ensure-device-id!))
     (state/load-or-seed! backend))
   (state/rebuild!)
+
+  ;; URL ↔ :selection two-way sync.
+  (router/install!)
 
   ;; Mount.
   (let [el (.getElementById js/document "app")
