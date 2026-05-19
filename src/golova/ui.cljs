@@ -232,13 +232,14 @@
 ;; Type-aware value display
 
 (defn- constructor-type-map
-  "Build a {constructor-name-str → type-name-str} lookup map for a domain.
-  Called once per render at the view level, not per cell."
-  [domain-id]
-  (into {}
-        (for [t (get-in @app-state [:domains domain-id :schema :types])
-              c (:constructors t)]
-          [c (:name t)])))
+  "Build a {constructor-name-str → type-name-str} lookup map. Now global
+  (all declared types live in one schema); domain arg is accepted but
+  ignored for backwards compatibility with callers being migrated."
+  ([] (into {}
+            (for [t (get-in @app-state [:schema :types])
+                  c (:constructors t)]
+              [c (:name t)])))
+  ([_domain-id] (constructor-type-map)))
 
 (defn type-value
   "Render a cell value with a type-aware visual treatment and a hover
@@ -346,24 +347,25 @@
 ;; Typed input — used by the predicate add-row form AND inline cell-edit.
 
 (defn- type-options
-  "Constructor list for a declared type in the given domain, or nil."
-  [domain-id tname]
+  "Constructor list for a declared type, or nil. Now global (types live in
+  one schema)."
+  [tname]
   (let [t (first (filter #(= tname (:name %))
-                         (get-in @app-state [:domains domain-id :schema :types])))]
+                         (get-in @app-state [:schema :types])))]
     (when t (vec (:constructors t)))))
 
 (defn typed-input
   "A controlled input for a single typed value. `state` is an r/atom holding
   {:val raw-string :new-mode? bool}. For declared enum types renders a
   <select> with a '+ new …' sentinel that swaps to a text input on click."
-  [{:keys [domain-id arg-type state placeholder on-enter autofocus?]}]
-  (let [opts (type-options domain-id arg-type)
+  [{:keys [arg-type state placeholder on-enter autofocus?]}]
+  (let [opts (type-options arg-type)
         st @state
         in-new? (:new-mode? st)
         commit-new (fn [v]
                      (let [v (str/trim (or v ""))]
                        (when (seq v)
-                         (state/extend-type! domain-id arg-type v)
+                         (state/extend-type! arg-type v)
                          (swap! state assoc :val v :new-mode? false))))]
     (cond
       ;; Declared enum: dropdown of constructors (+ "+ new")
@@ -412,25 +414,23 @@
 ;; Predicate / type / rule extraction from a domain
 
 (defn- domain-predicates
-  "Return seq of {:name k :arity n :facts [...]} for every user-visible
-  attribute in the domain's store. Datahike-native: there are no arity-1
-  type-tag tricks; everything is arity-2 EAV."
-  [domain]
-  (let [domain-id (:id domain)
-        triples (state/all-triples domain-id)
+  "Return seq of {:name :arity :facts [...] :declared?} for predicates
+  visible under `domain-id`. Declared = filed under this domain; discovered
+  = facts about atoms in this domain whose attr isn't declared here."
+  [domain-id]
+  (let [triples (state/triples-in-domain domain-id)
         own-attrs (->> triples (map second) (filter keyword?) distinct)
-        declared (set (map :name (get-in domain [:schema :predicates])))]
+        declared-here (state/declared-predicates-in domain-id)
+        declared-here-names (set (map :name declared-here))]
     (concat
-     ;; declared predicates (always shown, even with zero facts)
-     (for [p (get-in domain [:schema :predicates])]
+     (for [p declared-here]
        {:name (:name p)
         :arity (count (:argTypes p))
         :arg-types (:argTypes p)
         :declared? true
         :facts (vec (filter #(= (keyword (:name p)) (second %)) triples))})
-     ;; discovered predicates (asserted via UI without prior declaration)
      (for [a own-attrs
-           :when (not (contains? declared (name a)))]
+           :when (not (contains? declared-here-names (name a)))]
        {:name (name a)
         :namespace (namespace a)
         :arity 2
@@ -438,19 +438,17 @@
         :facts (vec (filter #(= a (second %)) triples))}))))
 
 (defn- domain-rules
-  "Return seq of {:name n :arity a :clauses [rule …]} per rule head.
-  Datahike rules look like `[(head-name ?a ?b) body…]`; we group by head
-  name + arity so multi-clause rules (e.g. ancestor base + recursive)
-  appear as one sidebar entry."
-  [domain]
-  (->> (:rules domain)
-       (keep (fn [r]
-               (when (and (vector? r) (seq r))
-                 (let [head (first r)]
+  "Return seq of {:name :arity :clauses [...]} for rules filed under
+  `domain-id`, grouped by head name + arity."
+  [domain-id]
+  (->> (state/rules-in domain-id)
+       (keep (fn [{:keys [clause]}]
+               (when (and (vector? clause) (seq clause))
+                 (let [head (first clause)]
                    (when (and (seq? head) (symbol? (first head)))
                      {:name (str (first head))
                       :arity (count (rest head))
-                      :rule r})))))
+                      :rule clause})))))
        (group-by (juxt :name :arity))
        (map (fn [[[nm ar] clauses]]
               {:name nm :arity ar :clauses (mapv :rule clauses)}))
@@ -468,7 +466,7 @@
                  (if (str/blank? t)
                    (swap! app-state assoc :top-query {:text "" :result nil})
                    (swap! app-state assoc-in [:top-query :result]
-                          (state/run-query (state/current-id) t)))))]
+                          (state/run-query t)))))]
     [:div
      [:div.topbar
       [:input.query
@@ -537,7 +535,8 @@
    (when meta [:span.meta meta])])
 
 (defn sidebar []
-  (let [{:keys [domains current-domain selection expanded expanded-subs]} @app-state
+  (let [{:keys [current-domain selection expanded expanded-subs]} @app-state
+        domains (state/domains-list)
         on-home? (= :home (:kind selection))
         sub-exp? (fn [id k] (contains? (or expanded-subs #{}) [id k]))]
     [:aside
@@ -566,15 +565,15 @@
          :on-click #(state/open-modal! {:kind :new-domain})}
         "+"]]
       (doall
-       (for [[id d] (sort-by (comp str first) domains)
+       (for [{:keys [id label]} domains
              :let [exp? (contains? (or expanded #{}) id)
                    active-domain? (= id current-domain)
-                   preds (domain-predicates d)
+                   preds (domain-predicates id)
                    decl-pred (filter :declared? preds)
                    disc-pred (filter (complement :declared?) preds)
-                   rules (domain-rules d)
-                   types (get-in d [:schema :types])
-                   queries (get-in d [:schema :queries])]]
+                   rules (domain-rules id)
+                   types (state/declared-types-in id)
+                   queries (state/queries-in id)]]
         ^{:key (str "d-" (name id))}
         [:div.domain-block
          [:div.domain-header
@@ -585,7 +584,7 @@
                          (do (state/switch-domain! id)
                              (state/expand-domain! id))))}
           [:span.chev]
-          [:span.name (:label d)]
+          [:span.name label]
           [:button.row-menu
            {:title "Domain menu"
             :on-click (fn [e]
@@ -796,8 +795,9 @@
         msg   (r/atom nil)     ;; {:kind :ok|:err :text "…"}
         dom   (r/atom nil)]    ;; nil → fall back to current-domain at render
     (fn []
-      (let [{:keys [domains current-domain]} @app-state
-            target (or @dom current-domain (first (sort (keys domains))))
+      (let [{:keys [current-domain]} @app-state
+            domains (state/domains-list)
+            target (or @dom current-domain (-> domains first :id))
             commit (fn []
                      (let [{:keys [triples err]} (parse-scratch-input @text)]
                        (cond
@@ -810,9 +810,8 @@
                          :else
                          (let [attrs (set (map (comp keyword second) triples))
                                _ (doseq [tr triples]
-                                   (state/assert-triple! target tr "scratch"))
-                               rejs (get-in @app-state
-                                            [:domains target :rejections])
+                                   (state/assert-triple! tr "scratch" target))
+                               rejs (:rejections @app-state)
                                my-rejs (filter #(contains? attrs (:attribute %))
                                                rejs)]
                            (reset! text "")
@@ -836,8 +835,8 @@
            {:value (or (some-> target name) "")
             :disabled (empty? domains)
             :on-change #(reset! dom (keyword (.. % -target -value)))}
-           (for [[id d] (sort-by (comp str first) domains)]
-             ^{:key id} [:option {:value (name id)} (:label d)])]
+           (for [{:keys [id label]} domains]
+             ^{:key id} [:option {:value (name id)} label])]
           [:span.qs-hint "one triple per line: "
            [:code "[:alice :parent :bob]"]]]
          [:textarea.qs-input
@@ -862,19 +861,18 @@
            "Add"]]]))))
 
 (defn- pinned-query-card
-  "Render one pinned query: header (name + domain pill, click → query page)
-  and top N inline result rows."
   [{:keys [domain-id name]}]
-  (let [d (get-in @app-state [:domains domain-id])
-        q (first (filter #(= name (:name %)) (get-in d [:schema :queries])))
-        result (when q (state/run-query domain-id (:text q)))
+  (let [q (first (filter #(= name (:name %))
+                         (get-in @app-state [:schema :queries])))
+        result (when q (state/run-query (:text q)))
+        d-label (some-> (state/domain-info domain-id) :label)
         cap 5]
     [:div.pinned-card
      [:div.pq-head
-      [:a.pq-name {:on-click #(do (state/switch-domain! domain-id)
+      [:a.pq-name {:on-click #(do (some-> domain-id state/switch-domain!)
                                   (state/select! {:kind :query :name name}))}
        name]
-      [:span.pq-dom (:label d)]
+      (when d-label [:span.pq-dom d-label])
       (when-not (:error result)
         [:span.pq-count
          (count (:rows result)) " result"
@@ -887,7 +885,7 @@
        [:div.pq-empty "no solutions"]
 
        :else
-       (let [ctor-map (constructor-type-map domain-id)
+       (let [ctor-map (constructor-type-map)
              shown (take cap (:rows result))]
          [:div.pq-rows
           (for [[i row] (map-indexed vector shown)]
@@ -899,7 +897,7 @@
                 [:span.pq-k k] " " [type-value ctor-map v]])])
           (when (> (count (:rows result)) cap)
             [:div.pq-more
-             {:on-click #(do (state/switch-domain! domain-id)
+             {:on-click #(do (some-> domain-id state/switch-domain!)
                              (state/select! {:kind :query :name name}))}
              "+ " (- (count (:rows result)) cap) " more"])]))]))
 
@@ -918,14 +916,16 @@
           [pinned-query-card p]))])))
 
 (defn activity-feed
-  "List of recent events across all domains, with relative timestamps and
-  links into the predicate / entity pages."
+  "Recent events, with relative timestamps and links into the predicate /
+  entity pages. Each row shows the domain (looked up from the event's
+  subject's :in-domain) if it has one."
   []
-  (let [s @app-state
-        events (state/recent-events 15)]
+  (let [events (state/recent-events 15)
+        domains (state/domains-list)
+        ctor-map (constructor-type-map)]
     [:div.activity-feed
      (cond
-       (empty? (:domains s))
+       (empty? domains)
        [:div.empty-state "Create a domain to start logging activity."]
 
        (empty? events)
@@ -933,16 +933,17 @@
 
        :else
        (doall
-        (for [{:keys [id at op triple domain-id source]} events
-              :let [d (get-in s [:domains domain-id])
-                    ctor-map (constructor-type-map domain-id)
-                    [e a v] triple]]
+        (for [{:keys [id at op triple source]} events
+              :let [[e a v] triple
+                    dom (when (keyword? e) (state/entity-domain e))
+                    dom-label (some-> dom state/domain-info :label)]]
           ^{:key id}
           [:div.activity-row {:class (str "op-" (name op))}
            [:span.act-when {:title (.toLocaleString (js/Date. at))}
             (fmt-relative at)]
-           [:span.act-dom {:on-click #(state/switch-domain! domain-id)}
-            (:label d)]
+           (when dom-label
+             [:span.act-dom {:on-click #(state/switch-domain! dom)}
+              dom-label])
            [:span.act-op (case op :assert "+" :retract "−" (name op))]
            [:span.act-triple
             [:span.act-sub (atom-link e)]
@@ -1006,18 +1007,19 @@
         "+ New"]]
       [:div.section-card-body
        [:div.domains-grid
-        (for [[id d] (sort-by (comp str first) (:domains s))]
-          (let [n-facts (count (state/all-triples id))
-                n-preds (count (get-in d [:schema :predicates]))
-                n-rules (count (:rules d))]
-            ^{:key id}
-            [:div.domain-card
-             {:on-click #(state/switch-domain! id)}
-             [:div.dc-name (:label d)]
-             [:div.dc-meta
-              [:span n-facts " facts"]
-              [:span n-preds " preds"]
-              [:span n-rules " rules"]]]))
+        (doall
+         (for [{:keys [id label]} (state/domains-list)]
+           (let [n-facts (count (state/triples-in-domain id))
+                 n-preds (count (state/declared-predicates-in id))
+                 n-rules (count (state/rules-in id))]
+             ^{:key id}
+             [:div.domain-card
+              {:on-click #(state/switch-domain! id)}
+              [:div.dc-name label]
+              [:div.dc-meta
+               [:span n-facts " facts"]
+               [:span n-preds " preds"]
+               [:span n-rules " rules"]]])))
         [:div.domain-card.new
          {:on-click #(state/open-modal! {:kind :new-domain})}
          [:div.dc-name "+ New domain"]
@@ -1041,19 +1043,21 @@
   (let [wrapped (str "[" text "]")]
     (vec (reader/read-string wrapped))))
 
+(defn- domain-rule-clauses [domain-id]
+  (mapv :clause (state/rules-in domain-id)))
+
 (defn rules-view []
   (let [{:keys [current-domain]} @app-state
-        d (state/current)
-        initial (rules->text (:rules d))
+        initial (rules->text (domain-rule-clauses current-domain))
         local (r/atom {:text initial :loaded current-domain
                        :saved? true :err nil})
         table-state (r/atom {:query "" :provs #{}
                              :sort {:col-cur nil :dir nil}})]
     (fn []
       (let [domain-id (state/current-id)
-            d (state/current)
-            current-text (rules->text (:rules d))
-            err (:build-error d)]
+            d-info (state/domain-info domain-id)
+            current-text (rules->text (domain-rule-clauses domain-id))
+            err (:build-error @app-state)]
         (when (not= domain-id (:loaded @local))
           (reset! local {:text current-text :loaded domain-id
                          :saved? true :err nil}))
@@ -1061,7 +1065,7 @@
          [:div.view-head
           [:h2 "Rules"]
           [:span.desc "Datalog rules for "
-           [:b (:label d)] ". Each rule is "
+           [:b (:label d-info)] ". Each rule is "
            [:code "[(head ?a ?b) body…]"]
            ". Edit and rebuild."]
           [:div.actions-right
@@ -1098,13 +1102,13 @@
             (cond (or err (:err @local)) (str "error: " (or err (:err @local)))
                   (:saved? @local) "saved"
                   :else "edited — press Save (or ⌘↵)")]]]
-         ;; Stored triples
-         (when (:db d)
-           (let [ctor-map (constructor-type-map domain-id)
-                 triples (state/all-triples domain-id)
+         ;; Stored triples (filtered to this domain)
+         (when (:db @app-state)
+           (let [ctor-map (constructor-type-map)
+                 triples (state/triples-in-domain domain-id)
                  rows (mapv (fn [[e a v :as tr]]
                               {:e e :a a :v v :tr (vec tr)
-                               :prov (state/triple-provenance domain-id tr)})
+                               :prov (state/triple-provenance tr)})
                             triples)
                  provs-present (set (map :prov rows))
                  {:keys [query provs sort]} @table-state
@@ -1163,7 +1167,7 @@
                [:tbody
                 (doall
                  (for [{:keys [e a v tr prov]} capped]
-                  (let [pred-si (state/attr-schema-info domain-id a)
+                  (let [pred-si (state/attr-schema-info a)
                         pred-title (if pred-si
                                      (str (name a) " — "
                                           (state/db-type-label (:db/valueType pred-si))
@@ -1185,7 +1189,7 @@
                       (when (= :event prov)
                         [:button.ghost.danger
                          {:title "Retract this fact"
-                          :on-click #(state/retract-triple! domain-id (vec tr))}
+                          :on-click #(state/retract-triple! (vec tr))}
                          "×"])]])))]]]))]))))
 
 ;; ---------------------------------------------------------------------------
@@ -1206,16 +1210,13 @@
     :else        "atom"))
 
 (defn- pred-edit-row
-  "Editable display row for one triple in the predicate table. Cells become
-  inputs when clicked; Enter commits via replace-triple!, Esc cancels.
-  Renders nothing if the row is in pure display mode (rare — we always
-  render a row)."
-  [domain-id arg-types triple]
+  "Editable display row for one triple in the predicate table."
+  [arg-types triple]
   (let [tr (vec triple)
         [e a v] tr
-        edit (r/atom nil)                              ;; nil | {:idx i :st {:val ...}}
-        ctor-map (constructor-type-map domain-id)]
-    (fn [domain-id arg-types triple]
+        edit (r/atom nil)
+        ctor-map (constructor-type-map)]
+    (fn [arg-types triple]
       (let [tr (vec triple)
             [e a v] tr
             t1 (or (first arg-types)  (guess-type e))
@@ -1224,17 +1225,16 @@
                    (if (and @edit (= idx (:idx @edit)))
                      [:td.editing
                       [typed-input
-                       {:domain-id domain-id
-                        :arg-type  arg-type
+                       {:arg-type  arg-type
                         :state     (r/cursor edit [:st])
                         :autofocus? true
                         :on-enter (fn []
                                     (try
                                       (let [coerced (state/coerce-value
-                                                      domain-id arg-type
+                                                      arg-type
                                                       (:val (:st @edit)))
                                             new-tr (assoc tr idx coerced)]
-                                        (state/replace-triple! domain-id tr new-tr)
+                                        (state/replace-triple! tr new-tr)
                                         (reset! edit nil))
                                       (catch :default ex
                                         (swap! edit assoc :err (.-message ex)))))}]
@@ -1255,12 +1255,13 @@
          [:td.delete
           [:button.ghost.danger
            {:title "Retract"
-            :on-click #(state/retract-triple! domain-id tr)}
+            :on-click #(state/retract-triple! tr)}
            "×"]]]))))
 
 (defn- pred-add-row
-  "<tfoot> add-row form: one typed input per column, then Add."
-  [domain-id pred-name arg-types]
+  "<tfoot> add-row form: one typed input per column, then Add. `owning-domain`
+  (optional) auto-assigns :in-domain on new subjects."
+  [owning-domain pred-name arg-types]
   (let [n (count arg-types)
         cells (vec (repeatedly n #(r/atom {:val ""})))
         err (r/atom nil)]
@@ -1270,8 +1271,7 @@
          ^{:key i}
          [:td
           [typed-input
-           {:domain-id domain-id
-            :arg-type  t
+           {:arg-type  t
             :state     (get cells i)
             :placeholder t}]])
        [:td.delete
@@ -1280,8 +1280,9 @@
           :on-click (fn []
                       (try
                         (state/assert-from-form!
-                          domain-id pred-name arg-types
-                          (mapv #(:val @%) cells))
+                          pred-name arg-types
+                          (mapv #(:val @%) cells)
+                          owning-domain)
                         (doseq [c cells] (reset! c {:val ""}))
                         (reset! err nil)
                         (catch :default ex
@@ -1293,12 +1294,13 @@
   "Header pill showing the item's current domain, click → popover that
   lists other domains for moving. `mover` is a fn [src-id dst-id]."
   [src-id mover]
-  (let [label (get-in @app-state [:domains src-id :label])]
-    [:span.pill.movable
-     {:title "Move to another domain"
-      :on-click (fn [e] (open-popover-from-event!
-                          {:kind :move-to :src src-id :mover mover} e))}
-     "in " [:b label] " ▾"]))
+  (let [label (some-> (state/domain-info src-id) :label)]
+    (when label
+      [:span.pill.movable
+       {:title "Move to another domain"
+        :on-click (fn [e] (open-popover-from-event!
+                            {:kind :move-to :src src-id :mover mover} e))}
+       "in " [:b label] " ▾"])))
 
 (defn- rules-using-attr
   "Return rules whose body references `attr` — either as a Datalog pattern
@@ -1353,19 +1355,19 @@
                           :sort {:col-cur nil :dir nil}})]
     (fn [name arity]
       (let [domain-id (state/current-id)
-            d (state/current)
             attr (keyword name)
-            all-triples (filter #(= attr (second %)) (state/all-triples domain-id))
+            all-triples (filter #(= attr (second %)) (state/all-triples))
             declared (first (filter #(and (= name (:name %))
                                           (= arity (count (:argTypes %))))
-                                    (get-in d [:schema :predicates])))
+                                    (get-in @app-state [:schema :predicates])))
             arg-types (when declared (:argTypes declared))
-            defining-rules (rules-defining-attr d attr)
-            using-rules (rules-using-attr d attr)
+            all-rules (state/rules-in nil)            ;; not used directly
+            defining-rules (rules-defining-attr {:rules (mapv :clause (:rules @app-state))} attr)
+            using-rules (rules-using-attr {:rules (mapv :clause (:rules @app-state))} attr)
             ;; enrich with provenance
             rows (mapv (fn [[e a v :as tr]]
                          {:e e :v v :tr (vec tr)
-                          :prov (state/triple-provenance domain-id tr)})
+                          :prov (state/triple-provenance tr)})
                        all-triples)
             provs-present (set (map :prov rows))
             {:keys [query provs sort]} @ui-state
@@ -1399,7 +1401,7 @@
              {:title (str "This attribute exists in stored facts but has no declared "
                           "arg types. Click 'Declare types' below to add a schema entry.")}
              "discovered"])
-          (let [si (state/attr-schema-info domain-id attr)]
+          (let [si (state/attr-schema-info attr)]
             (when si
               (let [vt (:db/valueType si)
                     card (:db/cardinality si)
@@ -1412,8 +1414,8 @@
                                 "many — a single entity may hold many values for this attribute."
                                 "one — only one value per entity (overwrites on re-assert)."))}
                  (str vt-label " · " (if many? "many" "one"))])))
-          [move-to-pill domain-id
-           (fn [src dst] (state/move-predicate! src dst name arity))]
+          [move-to-pill (:domain declared)
+           (fn [_src dst] (state/move-predicate! name arity dst))]
           [:div.actions-right
            (when declared
              [:button.ghost.danger
@@ -1421,7 +1423,7 @@
                            (when (js/confirm
                                   (str "Delete predicate declaration " name "/" arity
                                        "?\nFacts are not deleted."))
-                             (state/delete-predicate! domain-id name arity)
+                             (state/delete-predicate! name arity)
                              (state/select! {:kind :rules})))}
               "Delete declaration"])]]
          [table-toolbar
@@ -1458,7 +1460,7 @@
                      "No rows match the current filter.")]]
              (for [{:keys [tr]} filtered]
                ^{:key (pr-str tr)}
-               [pred-edit-row domain-id (or arg-types []) tr]))]
+               [pred-edit-row (or arg-types []) tr]))]
           (let [effective-types (or arg-types ["atom" "atom"])]
             (when (= 2 (count effective-types))
               [:tfoot
@@ -1526,9 +1528,9 @@
         loaded-name (r/atom nil)
         last-len (r/atom 0)]
     (fn [name]
-      (let [domain-id (state/current-id)
-            d (state/current)
-            t (first (filter #(= name (:name %)) (get-in d [:schema :types])))
+      (let [t (first (filter #(= name (:name %))
+                             (get-in @app-state [:schema :types])))
+            domain-id (:domain t)
             schema-ctors (vec (:constructors t))]
         ;; reset on type-switch or when the schema changed underneath us
         (when (or (not= name @loaded-name)
@@ -1546,7 +1548,7 @@
             [:span.pill.declared "type"]
             [:span.pill.schema-badge "ref · many"]
             [move-to-pill domain-id
-             (fn [src dst] (state/move-type! src dst name))]
+             (fn [_src dst] (state/move-type! name dst))]
             [:div.actions-right
              [:button.primary.small
               {:disabled (= @ctors-atom schema-ctors)
@@ -1556,7 +1558,7 @@
              [:button.ghost.danger
               {:on-click (fn []
                            (when (js/confirm (str "Delete type " name "?"))
-                             (state/delete-type! domain-id name)
+                             (state/delete-type! name)
                              (state/select! {:kind :rules})))}
               "Delete type"]]]
            [:div.type-editor
@@ -1631,8 +1633,8 @@
      [:div.rule-body (hl-args body-str) [:span.dot "."]]]))
 
 (defn rule-view [name]
-  (let [d (state/current)
-        entry (first (filter #(= name (:name %)) (domain-rules d)))
+  (let [domain-id (state/current-id)
+        entry (first (filter #(= name (:name %)) (domain-rules domain-id)))
         clauses (or (:clauses entry) [])]
     [:div.view
      [:div.view-head
@@ -1655,13 +1657,13 @@
 ;; Query view (saved query)
 
 (defn query-view [name]
-  (let [d (state/current)
-        q (first (filter #(= name (:name %)) (get-in d [:schema :queries])))
+  (let [q (first (filter #(= name (:name %))
+                         (get-in @app-state [:schema :queries])))
         local (r/atom {:text (:text q) :loaded-name name :result nil})]
     (fn [name]
-      (let [domain-id (state/current-id)
-            d (state/current)
-            q (first (filter #(= name (:name %)) (get-in d [:schema :queries])))]
+      (let [q (first (filter #(= name (:name %))
+                             (get-in @app-state [:schema :queries])))
+            domain-id (:domain q)]
         ;; If the user switched to a different saved query, reset local
         ;; so the textarea shows the new query's body, not the previous one.
         (when (not= name (:loaded-name @local))
@@ -1675,18 +1677,18 @@
             (when (:pinned? q)
               [:span.pill.pinned {:title "Pinned to Home"} "pinned"])
             [move-to-pill domain-id
-             (fn [src dst] (state/move-query! src dst (:name q)))]
+             (fn [_src dst] (state/move-query! (:name q) dst))]
             [:div.actions-right
              [:button.ghost.small
               {:title (if (:pinned? q)
                         "Unpin from Home"
                         "Pin to Home — show inline results on the Home page")
-               :on-click #(state/toggle-pin-query! domain-id (:name q))}
+               :on-click #(state/toggle-pin-query! (:name q))}
               (if (:pinned? q) "Unpin" "Pin to Home")]
              [:button.ghost.danger
               {:on-click (fn []
                            (when (js/confirm (str "Delete saved query " (:name q) "?"))
-                             (state/delete-query! domain-id (:name q))
+                             (state/delete-query! (:name q))
                              (state/select! {:kind :rules})))} "Delete"]]]
            [:div.program-editor
             [:textarea {:value (:text @local)
@@ -1696,7 +1698,7 @@
             [:div.footer
              [:button.primary
               {:on-click (fn []
-                           (let [r (state/run-query domain-id (:text @local))]
+                           (let [r (state/run-query (:text @local))]
                              (swap! local assoc :result r)))}
               "Run"]
              [:button
@@ -1727,9 +1729,9 @@
 ;; Entity view
 
 (defn- entity-add-form
-  "Inline add-fact form for an entity, with the entity fixed in one slot
-  and a typed input in the other. Commits on Enter or '+ Add'."
-  [domain-id entity attr role arg-types]
+  "Inline add-fact form for an entity. `owning-domain` is the domain to
+  auto-assign new subjects to when one slot is editable."
+  [owning-domain entity attr role arg-types]
   (let [val (r/atom {:val ""})
         err (r/atom nil)]
     (fn [_ entity attr role arg-types]
@@ -1738,16 +1740,16 @@
                          :object  (or (first arg-types)  "atom"))
             commit (fn []
                      (try
-                       (let [v (state/coerce-value domain-id other-type (:val @val))
+                       (let [v (state/coerce-value other-type (:val @val))
                              triple (case role
                                       :subject [entity attr v]
                                       :object  [v attr entity])]
-                         (state/assert-triple! domain-id triple "form")
+                         (state/assert-triple! triple "form" owning-domain)
                          (reset! val {:val ""})
                          (reset! err nil))
                        (catch :default ex
                          (reset! err (.-message ex)))))
-            input [typed-input {:domain-id domain-id :arg-type other-type
+            input [typed-input {:arg-type other-type
                                 :state val :placeholder other-type
                                 :on-enter commit}]
             fixed [:span.entity-fixed (fmt-val entity)]]
@@ -1792,13 +1794,12 @@
      [entity-add-form domain-id entity attr role arg-types])])
 
 (defn- entity-note-block
-  "Markdown note section: view-mode renders, edit-mode shows a textarea.
-  Empty + view-mode shows a tiny + Add note button."
-  [domain-id entity]
+  "Markdown note section. (`owning-domain` unused — notes are global.)"
+  [_owning-domain entity]
   (let [editing? (r/atom false)
         draft (r/atom nil)]
-    (fn [domain-id entity]
-      (let [note (state/entity-note domain-id entity)]
+    (fn [_owning-domain entity]
+      (let [note (state/entity-note entity)]
         (if @editing?
           [:div.entity-note.editing
            [:textarea.note-edit
@@ -1809,7 +1810,7 @@
            [:div.note-controls
             [:button.primary.small
              {:on-click (fn []
-                          (state/set-note! domain-id entity (or @draft note ""))
+                          (state/set-note! entity (or @draft note ""))
                           (reset! editing? false)
                           (reset! draft nil))}
              "Save"]
@@ -1828,13 +1829,11 @@
 (defn entity-view [e]
   (let [ui-state (r/atom {:open-add nil :dedupe? true})]
     (fn [e]
-      (let [domain-id (state/current-id)
-            d (state/current)
-            triples (state/entity-mentions domain-id e)
-            ;; hide :note from the relation groups — it has its own section.
+      (let [domain-id (or (state/entity-domain e) (state/current-id))
+            triples (state/entity-mentions e)
             triples (remove #(= :note (second %)) triples)
             by-attr (group-by second triples)
-            declared-preds (->> (get-in d [:schema :predicates])
+            declared-preds (->> (get-in @app-state [:schema :predicates])
                                 (filter #(= 2 (count (:argTypes %)))))
             seen-attrs (set (keys by-attr))
             unseen-preds (->> declared-preds
@@ -1866,7 +1865,7 @@
              ^{:key (str attr)}
              (let [decl (first (filter #(and (= (name attr) (:name %))
                                              (= 2 (count (:argTypes %))))
-                                       (get-in d [:schema :predicates])))
+                                       (get-in @app-state [:schema :predicates])))
                    arg-types (when decl (:argTypes decl))
                    roles (entity-relation-roles e trs)
                    shown (if dedupe? (canonical-symmetric trs) trs)
@@ -1887,12 +1886,12 @@
                    [:span.arrow "→"]
                    [:span (atom-link vv)]
                    [:button.ghost.danger.remove
-                    {:on-click #(state/retract-triple! domain-id (vec tr))
+                    {:on-click #(state/retract-triple! (vec tr))
                      :title "Retract"} "×"]])
                 [relation-form-block domain-id e attr arg-types roles]])))
 
          ;; Linked from notes — wikilink backlinks
-         (let [bl (state/note-backlinks domain-id e)]
+         (let [bl (state/note-backlinks e)]
            (when (seq bl)
              [:div.backlinks
               [:h3.section-h "Linked from notes"]
@@ -1952,8 +1951,8 @@
 (defn- arg-type-options
   "List of arg-type strings available in the given domain: the built-ins
   plus every declared (enum) type."
-  [domain-id]
-  (let [declared (->> (get-in @app-state [:domains domain-id :schema :types])
+  [_domain-id]
+  (let [declared (->> (get-in @app-state [:schema :types])
                       (map :name)
                       sort)]
     (vec (concat ["atom" "int" "string"] declared))))
@@ -2076,7 +2075,8 @@
         skip-empty?* (r/atom true)
         msg     (r/atom nil)]
     (fn [{:keys [data]}]
-      (let [domains (:domains @app-state)
+      (let [domains (state/domains-list)
+            domain-by-id (into {} (map (juxt :id identity) domains))
             id-idx @id-idx*
             id-col (get (:columns preview) id-idx)
             empty-col-idxs (set (for [[i c] (map-indexed vector (:columns preview))
@@ -2102,7 +2102,7 @@
                                 1))
             n-skipped (- (count (:rows data)) (count keep-rows))
             create-new? (= :__new__ @dom*)
-            valid? (or (and (not create-new?) (contains? domains @dom*))
+            valid? (or (and (not create-new?) (contains? domain-by-id @dom*))
                        (and create-new? (seq (str/trim @new-dom))))]
         [:<>
          [:h3 "Import CSV"]
@@ -2118,8 +2118,8 @@
             :on-change (fn [e]
                          (let [v (.. e -target -value)]
                            (reset! dom* (if (= "__new__" v) :__new__ (keyword v)))))}
-           (for [[id d] (sort-by (comp str first) domains)]
-             ^{:key id} [:option {:value (name id)} (:label d)])
+           (for [{:keys [id label]} domains]
+             ^{:key id} [:option {:value (name id)} label])
            [:option {:value "__new__"}
             (str "+ New domain: " new-label)]]
           (when create-new?
@@ -2247,11 +2247,11 @@
                             (let [rule-text (read-field "rule-text")
                                   parsed (when (seq rule-text)
                                            (reader/read-string rule-text))
-                                  d (get-in @app-state [:domains (:domain m)])
-                                  rules (vec (:rules d))
-                                  new-rules (conj rules parsed)]
+                                  dom-id (:domain m)
+                                  current (mapv :clause (state/rules-in dom-id))
+                                  new-rules (conj current parsed)]
                               (when parsed
-                                (state/set-rules! (:domain m) new-rules)
+                                (state/set-rules! dom-id new-rules)
                                 (state/select! {:kind :rules}))
                               (state/close-modal!))
                             (catch :default ex
@@ -2281,7 +2281,7 @@
            [:h3 "Rename domain"]
            [:div.modal-sub "Change the display name of this domain."]
            [text-field {:label "Name" :id "rename-domain-label"
-                        :default (get-in @app-state [:domains (:domain m) :label])}]
+                        :default (some-> (state/domain-info (:domain m)) :label)}]
            [:div.modal-actions
             [:button {:on-click state/close-modal!} "Cancel"]
             [:button.primary
@@ -2383,23 +2383,20 @@
 (defn- domain-entities
   "Set of keyword entities in a domain's db + type constructors."
   [d]
-  (let [triples (state/all-triples (:id d))
-        in-store (->> triples
-                      (mapcat (fn [[e _ v]] [e v]))
-                      (filter keyword?)
-                      set)
-        ctors (->> (get-in d [:schema :types])
+  (let [domain-id d
+        in-store (set (state/atoms-in-domain domain-id))
+        ctors (->> (state/declared-types-in domain-id)
                    (mapcat (fn [t] (map keyword (:constructors t))))
                    set)]
     (into (or in-store #{}) ctors)))
 
 (defn- palette-candidates
-  "Build the full candidate list for the current state. Each item:
-   {:kind … :label … :sublabel … :icon … :run (fn []) :sort-key …}"
-  [state]
-  (let [doms   (:domains state)
-        cur-id (:current-domain state)
-        d      (get doms cur-id)
+  "Build the full candidate list for the current state."
+  [_state]
+  (let [cur-id (state/current-id)
+        cur (some-> cur-id state/domain-info)
+        d-label (:label cur)
+        doms (state/domains-list)
         nav    (fn [sel] #(do (state/close-palette!) (state/select! sel)))
         modal  (fn [m]   #(do (state/close-palette!) (state/open-modal! m)))]
     (concat
@@ -2409,42 +2406,42 @@
       {:kind :cmd :label "Open settings" :icon "⚙"
        :run (modal {:kind :settings})}]
      (when cur-id
-       [{:kind :cmd :label (str "New type in " (:label d) "…") :icon "◆"
+       [{:kind :cmd :label (str "New type in " d-label "…") :icon "◆"
          :run (modal {:kind :new-type :domain cur-id})}
-        {:kind :cmd :label (str "New predicate in " (:label d) "…") :icon "▦"
+        {:kind :cmd :label (str "New predicate in " d-label "…") :icon "▦"
          :run (modal {:kind :new-predicate :domain cur-id})}
-        {:kind :cmd :label (str "New rule in " (:label d) "…") :icon "ƒ"
+        {:kind :cmd :label (str "New rule in " d-label "…") :icon "ƒ"
          :run (modal {:kind :new-rule :domain cur-id})}
-        {:kind :cmd :label (str "Save query in " (:label d) "…") :icon "?"
+        {:kind :cmd :label (str "Save query in " d-label "…") :icon "?"
          :run (modal {:kind :new-query :domain cur-id})}
-        {:kind :cmd :label (str "Open rules for " (:label d)) :icon "ƒ"
+        {:kind :cmd :label (str "Open rules for " d-label) :icon "ƒ"
          :run (nav {:kind :rules})}])
      ;; Domains
-     (for [[id dd] (sort-by (comp str first) doms)]
-       {:kind :domain :label (:label dd) :sublabel "domain" :icon "□"
+     (for [{:keys [id label]} doms]
+       {:kind :domain :label label :sublabel "domain" :icon "□"
         :run #(do (state/close-palette!) (state/switch-domain! id))})
      ;; Things in the current domain
      (when cur-id
        (concat
-        (for [t (get-in d [:schema :types])]
+        (for [t (state/declared-types-in cur-id)]
           {:kind :type :label (:name t) :sublabel "type" :icon "◆"
            :run (nav {:kind :type :name (:name t)})})
-        (for [p (domain-predicates d)]
+        (for [p (domain-predicates cur-id)]
           {:kind :pred
            :label (str (:name p) "/" (:arity p))
            :sublabel (if (:declared? p) "predicate" "predicate (discovered)")
            :icon (if (:declared? p) "▦" "▢")
            :run (nav {:kind :predicate :name (:name p) :arity (:arity p)})})
-        (for [r (domain-rules d)]
+        (for [r (domain-rules cur-id)]
           {:kind :rule
            :label (str (:name r) "/" (:arity r))
            :sublabel "rule"
            :icon "ƒ"
            :run (nav {:kind :rule :name (:name r)})})
-        (for [q (get-in d [:schema :queries])]
+        (for [q (state/queries-in cur-id)]
           {:kind :query :label (:name q) :sublabel "saved query" :icon "?"
            :run (nav {:kind :query :name (:name q)})})
-        (for [e (sort-by str (domain-entities d))]
+        (for [e (sort-by str (domain-entities cur-id))]
           {:kind :entity :label (fmt-val e) :sublabel "entity" :icon "◇"
            :run (nav {:kind :entity :name e})}))))))
 
@@ -2536,7 +2533,7 @@
          [popover-shell (:anchor p)
           [:div.popover-card
            [:div.popover-title
-            [:b (get-in @app-state [:domains (:domain p) :label])]]
+            [:b (some-> (state/domain-info (:domain p)) :label)]]
            [:button.popover-item
             {:on-click #(do (close-popover!)
                             (state/open-modal! {:kind :new-type :domain (:domain p)}))}
@@ -2562,7 +2559,7 @@
            [:button.popover-item.danger
             {:on-click (fn []
                          (close-popover!)
-                         (let [d (get-in @app-state [:domains (:domain p)])]
+                         (let [d (state/domain-info (:domain p))]
                            (when (js/confirm
                                   (str "Delete domain " (:label d)
                                        "?\nAll its facts, rules, and schema go with it."))
@@ -2571,20 +2568,20 @@
 
          :move-to
          (let [{:keys [src mover]} p
-               others (filter #(not= src (first %)) (:domains @app-state))]
+               others (remove #(= src (:id %)) (state/domains-list))]
            [popover-shell (:anchor p)
             [:div.popover-card
              [:div.popover-title "Move to"]
              (if (empty? others)
                [:div.popover-hint "No other domains."]
-               (for [[id d] (sort-by (comp str first) others)]
+               (for [{:keys [id label]} others]
                  ^{:key id}
                  [:button.popover-item
                   {:on-click (fn []
                                (mover src id)
                                (state/switch-domain! id)
                                (close-popover!))}
-                  (:label d)]))]])
+                  label]))]])
 
          nil)])))
 
