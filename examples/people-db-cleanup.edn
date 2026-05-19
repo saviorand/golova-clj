@@ -1,0 +1,47 @@
+;; Conversion plan for a Notion People-DB CSV import.
+;;
+;; Apply via Settings → "Apply conversion plan…", or programmatically with
+;; `golova.state/apply-conversion-plan!`.
+;;
+;; Each op runs in order. :convert is idempotent — running the plan twice
+;; on already-converted data is a no-op (values are already keywords).
+;;
+;; :to-domain forms:
+;;   "Some Label" — find-or-create a domain with this label
+;;   :existing-id — use an existing domain by id keyword
+;;   :same        — keep atoms in the same domain as the predicate
+
+[;; --- cross-domain refs --------------------------------------------------
+ ;; Affiliations and Source both denote organizations — share the domain.
+ {:op :convert :attr :affiliations
+  :to-domain "Organizations" :enum "organization"}
+ {:op :convert :attr :source
+  :to-domain "Organizations"}
+
+ ;; Geography
+ {:op :convert :attr :city
+  :to-domain "Places" :enum "city"}
+ {:op :convert :attr :country
+  :to-domain "Countries" :enum "country"}
+
+ ;; Knowledge tags
+ {:op :convert :attr :expertise
+  :to-domain "Topics" :enum "topic"}
+
+ ;; Job titles — broad but worth being navigable
+ {:op :convert :attr :profession-position
+  :to-domain "Roles" :enum "role"}
+
+ ;; --- in-domain enums (refs that stay in People) -------------------------
+ {:op :convert :attr :priority        :to-domain :same :enum "priority"}
+ {:op :convert :attr :reach-out       :to-domain :same :enum "yes-no"}
+ {:op :convert :attr :i-did-not-reply :to-domain :same :enum "yes-no"}
+ {:op :convert :attr :title           :to-domain :same :enum "title"}
+
+ ;; --- drop unused -------------------------------------------------------
+ ;; Notion exported this column as the literal string "Empty" for every
+ ;; row; the cleaned CSV blanked it, so there's no signal here.
+ {:op :drop :attr :met-question}
+
+ ;; Drop any predicate the auto-import declared but that has zero facts.
+ {:op :drop-empty}]

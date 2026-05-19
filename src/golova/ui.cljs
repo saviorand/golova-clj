@@ -1418,6 +1418,13 @@
            (fn [_src dst] (state/move-predicate! name arity dst))]
           [:div.actions-right
            (when declared
+             [:button.ghost.small
+              {:title "Convert this predicate's values into refs (atoms in a target domain)"
+               :on-click #(state/open-modal! {:kind :change-pred-type
+                                              :pred-name name
+                                              :pred-arity arity})}
+              "Change type"])
+           (when declared
              [:button.ghost.danger
               {:on-click (fn []
                            (when (js/confirm
@@ -2199,6 +2206,102 @@
                             "imported CSV:" (clj->js result))))}
            "Import"]]]))))
 
+(defn change-pred-type-form
+  "Modal for converting a scalar predicate to refs. User picks a target
+  domain (existing or new) and optionally a new enum type name."
+  [{:keys [pred-name pred-arity]}]
+  (let [pred (first (filter #(and (= pred-name (:name %))
+                                  (= pred-arity (count (:argTypes %))))
+                            (get-in @app-state [:schema :predicates])))
+        source-dom (:domain pred)
+        domains (state/domains-list)
+        ;; default suggestion: a new domain named after the predicate
+        suggested (-> pred-name
+                      (str/replace #"-" " ")
+                      str/trim
+                      (str/replace #"^." str/upper-case))
+        target* (r/atom :__new__)
+        new-dom (r/atom suggested)
+        make-enum?* (r/atom true)
+        enum-name (r/atom pred-name)]
+    (fn [_]
+      (let [t @target*
+            new? (= :__new__ t)
+            valid? (and (or (and (not new?) (some #(= t (:id %)) domains))
+                            (and new? (seq (str/trim @new-dom))))
+                        (or (not @make-enum?*)
+                            (seq (str/trim @enum-name))))
+            attr (keyword pred-name)
+            n-vals (count (distinct (filter some? (state/all-triples))))
+            ;; rough count of unique values for this attr
+            unique-values (->> (:events @app-state)
+                               (filter #(and (= :assert (:op %))
+                                             (= attr (keyword (second (:triple %))))))
+                               (map (comp #(nth % 2) :triple))
+                               (map (fn [v] (if (string? v) (str/trim v) v)))
+                               (remove #(or (nil? %)
+                                            (and (string? %) (str/blank? %))))
+                               distinct
+                               count)]
+        [:<>
+         [:h3 "Change type"]
+         [:div.modal-sub
+          "Convert " [:code (str ":" pred-name)] "'s values into refs. "
+          [:b unique-values] " unique value"
+          (when (not= 1 unique-values) "s")
+          " will become atoms in the target domain."]
+
+         [:div.field
+          [:label "Target domain"]
+          [:select.typed
+           {:value (if new? "__new__" (name t))
+            :on-change (fn [e]
+                         (let [v (.. e -target -value)]
+                           (reset! target* (if (= "__new__" v)
+                                             :__new__ (keyword v)))))}
+           (for [{:keys [id label]} domains]
+             ^{:key id} [:option {:value (name id)} label])
+           [:option {:value "__new__"} (str "+ New domain: " suggested)]]
+          (when new?
+            [:input {:placeholder "domain name"
+                     :value @new-dom
+                     :on-change #(reset! new-dom (.. % -target -value))
+                     :style {:margin-top "6px"}}])]
+
+         [:div.field
+          [:label {:style {:display "flex" :align-items "center" :gap "8px"
+                           :cursor "pointer" :text-transform "none"
+                           :letter-spacing "0" :font-size "13px"
+                           :font-weight "normal" :color "var(--text)"}}
+           [:input {:type "checkbox"
+                    :checked @make-enum?*
+                    :on-change #(reset! make-enum?* (.. % -target -checked))}]
+           "Also declare an enum type grouping the new atoms"]
+          (when @make-enum?*
+            [:input {:placeholder "enum type name (e.g. organization)"
+                     :value @enum-name
+                     :on-change #(reset! enum-name (.. % -target -value))
+                     :style {:margin-top "6px"}}])]
+
+         [:div.modal-actions
+          [:button {:on-click state/close-modal!} "Cancel"]
+          [:button.primary
+           {:disabled (not valid?)
+            :on-click (fn []
+                        (let [dom (if new?
+                                    (state/create-domain! (str/trim @new-dom))
+                                    t)
+                              result (state/convert-predicate-to-refs!
+                                       {:attr (keyword pred-name)
+                                        :target-domain dom
+                                        :enum-type-name
+                                          (when @make-enum?*
+                                            (str/trim @enum-name))
+                                        :source-pred-domain source-dom})]
+                          (js/console.log "converted:" (clj->js result))
+                          (state/close-modal!)))}
+           "Convert"]]]))))
+
 (defn modal []
   (let [m (:modal @app-state)]
     (when m
@@ -2223,6 +2326,10 @@
 
           :csv-import
           [csv-import-form {:data (:data m) :filename (:filename m)}]
+
+          :change-pred-type
+          [change-pred-type-form {:pred-name (:pred-name m)
+                                  :pred-arity (:pred-arity m)}]
 
           :new-type
           [new-type-form (:domain m)]
@@ -2362,6 +2469,36 @@
                                           (.readAsText rdr f)))))
                               (.click inp)))}
                "Import CSV…"]]]
+            [:div.settings-row
+             [:div.lbl "Conversion plan"
+              [:div.hint "Apply a declarative EDN plan that converts string predicates into refs, drops empties, etc. See "
+               [:code "examples/people-db-cleanup.edn"] " for the shape."]]
+             [:div
+              [:button
+               {:on-click (fn []
+                            (let [inp (.createElement js/document "input")]
+                              (set! (.-type inp) "file")
+                              (set! (.-accept inp) ".edn,text/plain")
+                              (set! (.-onchange inp)
+                                    (fn [e]
+                                      (when-let [f (-> e .-target .-files (aget 0))]
+                                        (let [rdr (js/FileReader.)]
+                                          (set! (.-onload rdr)
+                                                (fn [ev]
+                                                  (try
+                                                    (let [txt (.. ev -target -result)
+                                                          plan (reader/read-string txt)
+                                                          out (state/apply-conversion-plan! plan)]
+                                                      (js/console.log "plan result:" (clj->js out))
+                                                      (js/alert (str "Plan applied (" (count out)
+                                                                     " ops). See console for details."))
+                                                      (state/close-modal!))
+                                                    (catch :default ex
+                                                      (js/alert (str "Plan failed: "
+                                                                     (.-message ex)))))))
+                                          (.readAsText rdr f)))))
+                              (.click inp)))}
+               "Apply plan…"]]]
             [:div.settings-row.danger
              [:div.lbl "Reset all data"
               [:div.hint "Wipes every domain, event, and saved query. Leaves Golova empty so you can start from scratch. This can't be undone."]]
@@ -2551,6 +2688,13 @@
                             (state/open-modal! {:kind :new-query :domain (:domain p)}))}
             [:span.k "?"] " Add saved query"]
            [:div.popover-sep]
+           [:button.popover-item
+            {:title "Drop every predicate in the global schema that has zero facts"
+             :on-click (fn []
+                         (close-popover!)
+                         (let [{:keys [dropped]} (state/cleanup-empty-predicates!)]
+                           (js/console.log "cleaned up:" (clj->js dropped))))}
+            [:span.k "⌫"] " Clean up empty predicates"]
            [:button.popover-item
             {:on-click #(do (close-popover!)
                             (state/open-modal! {:kind :rename-domain
