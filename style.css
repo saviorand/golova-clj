@@ -134,6 +134,15 @@ aside {
 
 /* domain tree */
 .domain-block { margin-bottom: 6px; }
+.domain-block.subdomain { margin-bottom: 4px; position: relative; }
+.domain-block.subdomain::before {
+  content: ''; position: absolute;
+  left: 6px; top: 0; bottom: 0;
+  width: 1px; background: var(--border);
+}
+.domain-block.subdomain > .domain-header {
+  font-weight: 500; font-size: 13px;
+}
 .domain-header {
   padding: 6px 18px 6px 12px; cursor: pointer;
   display: flex; align-items: center; gap: 6px;
