@@ -2499,6 +2499,39 @@
                                           (.readAsText rdr f)))))
                               (.click inp)))}
                "Apply plan…"]]]
+            [:div.settings-row
+             [:div.lbl "Rules & queries"
+              [:div.hint "Import a program file: a map "
+               [:code "{:rules […] :queries […]}"]
+               " that adds Datalog rules and saves queries in one shot. "
+               "See " [:code "examples/people-db-program.edn"] "."]]
+             [:div
+              [:button
+               {:on-click (fn []
+                            (let [inp (.createElement js/document "input")]
+                              (set! (.-type inp) "file")
+                              (set! (.-accept inp) ".edn,text/plain")
+                              (set! (.-onchange inp)
+                                    (fn [e]
+                                      (when-let [f (-> e .-target .-files (aget 0))]
+                                        (let [rdr (js/FileReader.)]
+                                          (set! (.-onload rdr)
+                                                (fn [ev]
+                                                  (try
+                                                    (let [txt (.. ev -target -result)
+                                                          program (reader/read-string txt)
+                                                          out (state/apply-program! program)]
+                                                      (js/console.log "program result:" (clj->js out))
+                                                      (js/alert (str "Added "
+                                                                     (:rules-added out) " rule(s) and "
+                                                                     (:queries-added out) " query(ies)."))
+                                                      (state/close-modal!))
+                                                    (catch :default ex
+                                                      (js/alert (str "Program import failed: "
+                                                                     (.-message ex)))))))
+                                          (.readAsText rdr f)))))
+                              (.click inp)))}
+               "Import rules & queries…"]]]
             [:div.settings-row.danger
              [:div.lbl "Reset all data"
               [:div.hint "Wipes every domain, event, and saved query. Leaves Golova empty so you can start from scratch. This can't be undone."]]

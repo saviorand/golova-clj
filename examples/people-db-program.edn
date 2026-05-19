@@ -1,0 +1,89 @@
+;; Rules + saved queries for a Notion People DB, post-conversion-plan.
+;; Assumes you've run examples/people-db-cleanup.edn first, so the
+;; predicates :affiliations, :city, :country, :expertise, :source,
+;; :priority, :reach-out are ref-typed.
+;;
+;; Apply via Settings → "Import rules & queries…", or programmatically
+;; via `golova.state/apply-program!`.
+;;
+;; :domain accepts a string (find-or-create by label) or a keyword
+;; (existing domain id). All rules + queries here live under "People".
+
+{:rules
+ [;; --- pairwise relations derived from shared attributes ---------------
+  {:domain "People"
+   :clause [(colleague ?a ?b)
+            [?a :affiliations ?o]
+            [?b :affiliations ?o]]}
+
+  {:domain "People"
+   :clause [(local ?a ?b)
+            [?a :city ?c]
+            [?b :city ?c]]}
+
+  {:domain "People"
+   :clause [(compatriot ?a ?b)
+            [?a :country ?c]
+            [?b :country ?c]]}
+
+  {:domain "People"
+   :clause [(peer ?a ?b)
+            [?a :expertise ?t]
+            [?b :expertise ?t]]}
+
+  ;; People I came across via the same source (event, intro, channel)
+  {:domain "People"
+   :clause [(met-via ?a ?b)
+            [?a :source ?s]
+            [?b :source ?s]]}
+
+  ;; --- arity-1 flags -------------------------------------------------
+  ;; Inner circle = high priority AND I should reach out
+  {:domain "People"
+   :clause [(inner-circle ?p)
+            [?p :priority :high]
+            [?p :reach-out :yes]]}
+
+  ;; High-value = high priority alone
+  {:domain "People"
+   :clause [(high-value ?p)
+            [?p :priority :high]]}
+
+  ;; Stale = I haven't replied AND haven't flagged to ping
+  {:domain "People"
+   :clause [(stale ?p)
+            [?p :i-did-not-reply :yes]]}]
+
+ :queries
+ [;; --- direct lookups ------------------------------------------------
+  {:domain "People" :name "high priority"
+   :text "[?p :priority :high]"}
+
+  {:domain "People" :name "to reach out"
+   :text "[?p :reach-out :yes]"}
+
+  {:domain "People" :name "i never replied"
+   :text "[?p :i-did-not-reply :yes]"}
+
+  ;; --- through the rules above ---------------------------------------
+  {:domain "People" :name "inner circle"
+   :text "(inner-circle ?p)"
+   :pinned? true}
+
+  {:domain "People" :name "all colleagues"
+   :text "(colleague ?a ?b)"}
+
+  {:domain "People" :name "same-city pairs"
+   :text "(local ?a ?b)"}
+
+  {:domain "People" :name "shared-expertise pairs"
+   :text "(peer ?a ?b)"}
+
+  ;; --- cross-domain joins (use the :label fact on ref atoms) ---------
+  ;; People × org-label — shows the human-readable org for each affiliation
+  {:domain "People" :name "people × org"
+   :text "[?p :affiliations ?o] [?o :label ?org-name]"}
+
+  ;; All orgs by label
+  {:domain "Organizations" :name "all orgs"
+   :text "[?o :label ?name]"}]}

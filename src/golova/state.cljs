@@ -145,10 +145,18 @@
 
 ;; --- Rule materialisation -------------------------------------------------
 
-(defn- rewrite-rule-call [c]
-  (if (and (seq? c) (symbol? (first c)) (= 2 (count (rest c))))
-    (let [[hname & args] c]
-      [(first args) (keyword (str hname)) (second args)])
+(defn- rewrite-rule-call
+  "Sugar: rewrite `(head ?a ?b)` → `[?a :head ?b]` for arity-2 rule calls,
+  and `(head ?a)` → `[?a :head true]` for arity-1 (matches the boolean flag
+  the materializer emits for arity-1 rules). Plain patterns pass through."
+  [c]
+  (if (and (seq? c) (symbol? (first c)))
+    (let [[hname & args] c
+          n (count args)]
+      (cond
+        (= n 2) [(first args) (keyword (str hname)) (second args)]
+        (= n 1) [(first args) (keyword (str hname)) true]
+        :else c))
     c))
 
 (defn- expand-rule [db rule]
@@ -1326,6 +1334,49 @@
         ;; unknown op
         (vswap! out conj {:op (:op op) :error "unknown op"})))
     @out))
+
+;; ---------------------------------------------------------------------------
+;; Program import (rules + queries as a single EDN payload)
+
+(defn- resolve-domain
+  "Resolve a domain reference from a plan/program file:
+    string  → find-or-create by label
+    keyword → assume it's an existing id
+    nil     → fall back to current-domain"
+  [d]
+  (cond
+    (string? d)  (find-or-create-domain! d)
+    (keyword? d) d
+    :else        (current-id)))
+
+(defn apply-program!
+  "Import a program file: a map with :rules and/or :queries vectors.
+
+  Each rule:  {:clause [(head ?a ?b) body…] :domain <kw|str>}
+  Each query: {:name \"…\" :text \"…\" :domain <kw|str> :pinned? <bool>}
+
+  Rules are APPENDED (not replaced) to the existing rules vector, filed
+  under the resolved domain. Queries are upserted by :name within their
+  domain (same as `save-query!`). One rebuild at the end."
+  [{:keys [rules queries]}]
+  (let [new-rules (mapv (fn [{:keys [clause domain]}]
+                          {:id (str (random-uuid))
+                           :domain (resolve-domain domain)
+                           :clause clause})
+                        (or rules []))]
+    (swap! app-state update :rules (fnil into []) new-rules)
+    (doseq [{:keys [name text domain pinned?]} (or queries [])]
+      (let [dom (resolve-domain domain)]
+        (swap! app-state update-in [:schema :queries]
+               (fn [qs]
+                 (let [without (vec (remove #(= name (:name %)) (or qs [])))]
+                   (conj without
+                         (cond-> {:name name :text text :domain dom}
+                           pinned? (assoc :pinned? true))))))))
+    (rebuild!)
+    (save!)
+    {:rules-added (count new-rules)
+     :queries-added (count queries)}))
 
 (defn predicate-fact-count
   "Number of distinct facts currently in the db under `attr`."
