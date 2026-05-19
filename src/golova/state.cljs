@@ -861,9 +861,14 @@
 ;; ---------------------------------------------------------------------------
 ;; CSV import
 
-(defn- slugify [s]
+(defn- slugify
+  "Slug a free-text string into a keyword-safe form. Preserves Unicode
+  letters and numbers (Cyrillic / CJK / accented names slug to their own
+  script rather than collapsing to empty) — only punctuation, whitespace,
+  and emoji become '-'."
+  [s]
   (-> (or s "") str/lower-case
-      (str/replace #"[^a-z0-9]+" "-")
+      (str/replace (js/RegExp. "[^\\p{L}\\p{N}]+" "gu") "-")
       (str/replace #"^-+|-+$" "")))
 
 (defn- col-type [values]
