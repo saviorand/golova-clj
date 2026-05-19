@@ -32,6 +32,17 @@
    [:span.name.mono label]
    (when meta [:span.meta meta])])
 
+(defn- domain-tree-order
+  "DFS through domains-list, yielding [domain depth] pairs in parent-then-
+  children order. Used to render the sidebar as a tree."
+  [domains]
+  (let [by-parent (group-by :parent domains)]
+    (letfn [(walk [d depth]
+              (cons [d depth]
+                    (mapcat #(walk % (inc depth))
+                            (sort-by :label (get by-parent (:id d) [])))))]
+      (mapcat #(walk % 0) (sort-by :label (get by-parent nil []))))))
+
 (defn sidebar []
   (let [{:keys [current-domain selection expanded expanded-subs]} @app-state
         domains (state/domains-list)
@@ -60,7 +71,7 @@
          :on-click #(state/open-modal! {:kind :new-domain})}
         "+"]]
       (doall
-       (for [{:keys [id label]} domains
+       (for [[{:keys [id label]} depth] (domain-tree-order domains)
              :let [exp? (contains? (or expanded #{}) id)
                    active-domain? (= id current-domain)
                    preds (domain-predicates id)
@@ -70,7 +81,9 @@
                    types (state/declared-types-in id)
                    queries (state/queries-in id)]]
         ^{:key (str "d-" (name id))}
-        [:div.domain-block
+        [:div.domain-block {:class (when (pos? depth) (str "subdomain depth-" depth))
+                            :style (when (pos? depth)
+                                     {:padding-left (str (* depth 12) "px")})}
          [:div.domain-header
           {:class (when exp? "expanded")
            :on-click (fn []
@@ -92,13 +105,15 @@
                  notes (state/entities-with-notes id)]
              [:div.domain-body
               [nav-item
-               {:active? (and active-domain? (= :rules (:kind selection)))
+               {:active? (and active-domain?
+                              (= :rules (:kind selection))
+                              (= id (or (:domain selection) current-domain)))
                 :icon "≡"
                 :icon-tooltip "Domain overview: program editor + all stored facts"
                 :label "Rules / facts"
                 :extra-class "overview"
                 :on-click #(do (state/switch-domain! id)
-                               (state/select! {:kind :rules}))}]
+                               (state/select! {:kind :rules :domain id}))}]
               (sub {:label "Types" :items types
                     :expanded? (sub-exp? id :types)
                     :on-toggle #(state/toggle-subsection! id :types)
@@ -116,7 +131,9 @@
                     :label (:name t)
                     :meta (count (:constructors t))
                     :on-click #(do (state/switch-domain! id)
-                                   (state/select! {:kind :type :name (:name t)}))}]))
+                                   (state/select! {:kind :type
+                                                   :name (:name t)
+                                                   :domain id}))}]))
               (sub {:label "Predicates" :items all-preds
                     :expanded? (sub-exp? id :predicates)
                     :on-toggle #(state/toggle-subsection! id :predicates)
@@ -140,7 +157,8 @@
                     :on-click #(do (state/switch-domain! id)
                                    (state/select! {:kind :predicate
                                                    :name (:name p)
-                                                   :arity (:arity p)}))}]))
+                                                   :arity (:arity p)
+                                                   :domain id}))}]))
               (sub {:label "Rules" :items rules
                     :expanded? (sub-exp? id :rules)
                     :on-toggle #(state/toggle-subsection! id :rules)
@@ -159,7 +177,9 @@
                     :meta (when (> (count (:clauses r)) 1)
                             (count (:clauses r)))
                     :on-click #(do (state/switch-domain! id)
-                                   (state/select! {:kind :rule :name (:name r)}))}]))
+                                   (state/select! {:kind :rule
+                                                   :name (:name r)
+                                                   :domain id}))}]))
               (sub {:label "Queries" :items queries
                     :expanded? (sub-exp? id :queries)
                     :on-toggle #(state/toggle-subsection! id :queries)
@@ -176,7 +196,9 @@
                     :icon "?"
                     :label (:name q)
                     :on-click #(do (state/switch-domain! id)
-                                   (state/select! {:kind :query :name (:name q)}))}]))
+                                   (state/select! {:kind :query
+                                                   :name (:name q)
+                                                   :domain id}))}]))
               (when (seq notes)
                 [:<>
                  (sub {:label "Notes" :items notes
@@ -192,7 +214,9 @@
                        :icon "✎"
                        :label (fmt-val n)
                        :on-click #(do (state/switch-domain! id)
-                                      (state/select! {:kind :entity :name n}))}]))])]))]))]
+                                      (state/select! {:kind :entity
+                                                      :name n
+                                                      :domain id}))}]))])]))]))]
 
      [:div.sidebar-footer
       [:div.foot-row

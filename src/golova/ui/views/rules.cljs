@@ -32,14 +32,16 @@
   (mapv :clause (state/rules-in domain-id)))
 
 (defn rules-view []
-  (let [{:keys [current-domain]} @app-state
-        initial (rules->text (domain-rule-clauses current-domain))
-        local (r/atom {:text initial :loaded current-domain
+  (let [{:keys [current-domain selection]} @app-state
+        initial-dom (or (:domain selection) current-domain)
+        initial (rules->text (domain-rule-clauses initial-dom))
+        local (r/atom {:text initial :loaded initial-dom
                        :saved? true :err nil})
         table-state (r/atom {:query "" :provs #{} :page 0 :page-size 200
                              :sort {:col-cur nil :dir nil}})]
     (fn []
-      (let [domain-id (state/current-id)
+      (let [sel (:selection @app-state)
+            domain-id (or (:domain sel) (state/current-id))
             d-info (state/domain-info domain-id)
             current-text (rules->text (domain-rule-clauses domain-id))
             err (:build-error @app-state)]

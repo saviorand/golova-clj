@@ -379,17 +379,22 @@
        [:div.modal-card
         (case (:kind m)
           :new-domain
-          [:<>
-           [:h3 "New domain"]
-           [:div.modal-sub "A self-contained group of facts, rules, and saved queries."]
-           [text-field {:label "Name" :id "domain-label" :placeholder "e.g. family"}]
-           [:div.modal-actions
-            [:button {:on-click state/close-modal!} "Cancel"]
-            [:button.primary
-             {:on-click (fn []
-                          (let [lbl (read-field "domain-label")]
-                            (when (seq lbl) (state/create-domain! lbl))
-                            (state/close-modal!)))} "Create"]]]
+          (let [parent (:parent m)
+                parent-label (some-> parent state/domain-info :label)]
+            [:<>
+             [:h3 (if parent "New subdomain" "New domain")]
+             [:div.modal-sub
+              (if parent
+                [:span "A subdomain nested under " [:b parent-label] "."]
+                "A self-contained group of facts, rules, and saved queries.")]
+             [text-field {:label "Name" :id "domain-label" :placeholder "e.g. family"}]
+             [:div.modal-actions
+              [:button {:on-click state/close-modal!} "Cancel"]
+              [:button.primary
+               {:on-click (fn []
+                            (let [lbl (read-field "domain-label")]
+                              (when (seq lbl) (state/create-domain! lbl parent))
+                              (state/close-modal!)))} "Create"]]])
 
           :csv-import
           [csv-import-form {:data (:data m) :filename (:filename m)}]

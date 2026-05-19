@@ -49,6 +49,16 @@
             [:b (some-> (state/domain-info (:domain p)) :label)]]
            [:button.popover-item
             {:on-click #(do (close-popover!)
+                            (state/select! {:kind :domain :domain (:domain p)}))}
+            [:span.k "□"] " Open domain page"]
+           [:button.popover-item
+            {:on-click #(do (close-popover!)
+                            (state/open-modal! {:kind :new-domain
+                                                 :parent (:domain p)}))}
+            [:span.k "+"] " Add subdomain…"]
+           [:div.popover-sep]
+           [:button.popover-item
+            {:on-click #(do (close-popover!)
                             (state/open-modal! {:kind :new-type :domain (:domain p)}))}
             [:span.k "◆"] " Add type"]
            [:button.popover-item

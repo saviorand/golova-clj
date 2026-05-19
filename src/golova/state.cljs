@@ -392,7 +392,10 @@
   (save!))
 
 (defn switch-domain! [id]
-  (swap! app-state assoc :current-domain id :selection {:kind :rules} :error nil)
+  (swap! app-state assoc
+         :current-domain id
+         :selection {:kind :rules :domain id}
+         :error nil)
   (save!))
 
 (defn expand-domain! [id]
@@ -462,7 +465,9 @@
 
 (defn delete-domain!
   "Remove a domain atom + retract :in-domain for every atom that pointed at it.
-  Does NOT delete the atoms themselves (they become domainless)."
+  Also detach any subdomains (clears their :domain-parent so they become
+  top-level) — never delete subdomains. The atoms in this domain are not
+  deleted either (they become domainless)."
   [id]
   (let [db (:db @app-state)
         dom-eid (some-> (d/datoms db :avet :db/ident id) first :e)]
@@ -471,7 +476,10 @@
             member-idents (keep (fn [eid]
                                   (some-> db (d/datoms :eavt eid :db/ident) first :v))
                                 member-eids)
+            child-domains (map :id (subdomains-of id))
             evts (concat
+                   (for [c child-domains]
+                     (mk-event :retract {:triple [c :domain-parent id]}))
                    (for [m member-idents]
                      (mk-event :retract {:triple [m :in-domain id]}))
                    [(mk-event :retract {:triple [id :domain-label
@@ -498,6 +506,51 @@
       (append-events!
         [(mk-event :retract {:triple [id :domain-label old]})
          (mk-event :assert {:triple [id :domain-label new-label]} "rename-domain")]))))
+
+(defn subdomains-of
+  "Vec of domains whose :domain-parent is `parent-id`. Top-level domains
+  are returned when `parent-id` is nil."
+  [parent-id]
+  (vec (filter #(= parent-id (:parent %)) (domains-list))))
+
+(defn ancestor-of?
+  "True when `maybe-ancestor` is `id` or appears above it via :domain-parent."
+  [maybe-ancestor id]
+  (let [by-id (into {} (map (juxt :id identity) (domains-list)))]
+    (loop [cur id]
+      (cond
+        (nil? cur) false
+        (= maybe-ancestor cur) true
+        :else (recur (:parent (get by-id cur)))))))
+
+(defn move-domain-parent!
+  "Set or clear the :domain-parent on `id`. `new-parent` of nil unparents
+  the domain (it becomes top-level). Refuses cycles — a domain may not
+  become its own ancestor."
+  [id new-parent]
+  (cond
+    (nil? id) nil
+    (= id new-parent) (throw (ex-info "a domain can't be its own parent"
+                                      {:id id}))
+    (and new-parent (ancestor-of? id new-parent))
+    (throw (ex-info "cycle: target is a descendant of this domain"
+                    {:id id :new-parent new-parent}))
+    :else
+    (let [db (:db @app-state)
+          dom-eid (some-> (d/datoms db :avet :db/ident id) first :e)
+          old-parent-eid (some-> db (d/datoms :eavt dom-eid :domain-parent)
+                                 first :v)
+          old-parent (when old-parent-eid
+                       (some-> db (d/datoms :eavt old-parent-eid :db/ident)
+                               first :v))
+          evts (cond-> []
+                 old-parent
+                 (conj (mk-event :retract {:triple [id :domain-parent old-parent]}))
+                 new-parent
+                 (conj (mk-event :assert
+                                 {:triple [id :domain-parent new-parent]}
+                                 "move-domain-parent")))]
+      (when (seq evts) (append-events! evts)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Facts (assert / retract via the global event log)
