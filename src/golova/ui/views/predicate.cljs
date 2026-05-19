@@ -5,7 +5,8 @@
   (:require [reagent.core :as r]
             [golova.state :as state :refer [app-state]]
             [golova.ui.common :refer [fmt-val]]
-            [golova.ui.table :refer [table-toolbar sort-key sort-indicator
+            [golova.ui.table :refer [table-toolbar table-pagination page-window
+                                     sort-key sort-indicator
                                      cycle-sort row-matches?]]
             [golova.ui.typed :refer [constructor-type-map type-value typed-input]]
             [golova.ui.derivations :refer [rule-clause rules-defining-attr
@@ -108,7 +109,7 @@
         (when @err [:div.err.mini @err])]])))
 
 (defn predicate-view [name arity]
-  (let [ui-state (r/atom {:query "" :provs #{}
+  (let [ui-state (r/atom {:query "" :provs #{} :page 0 :page-size 200
                           :sort {:col-cur nil :dir nil}})]
     (fn [name arity]
       (let [domain-id (state/current-id)
@@ -139,6 +140,8 @@
                                    (sort-by (comp sort-key k) filtered)))
                              filtered))
                          filtered))
+            {:keys [page-size start]} (page-window ui-state (count filtered))
+            paged (->> filtered (drop start) (take page-size))
             sort-cur (:col-cur sort)
             sort-dir (:dir sort)]
         [:div.view
@@ -191,6 +194,10 @@
            :provs-present provs-present
            :total (count rows)
            :shown (count filtered)}]
+         [table-pagination
+          {:state-atom ui-state
+           :total (count filtered)
+           :page-size 200}]
          [:table.facts
           [:thead
            [:tr
@@ -218,7 +225,7 @@
                    (if (empty? all-triples)
                      "No facts yet — use the row below to add one."
                      "No rows match the current filter.")]]
-             (for [{:keys [tr]} filtered]
+             (for [{:keys [tr]} paged]
                ^{:key (pr-str tr)}
                [pred-edit-row (or arg-types []) tr]))]
           (let [effective-types (or arg-types ["atom" "atom"])]

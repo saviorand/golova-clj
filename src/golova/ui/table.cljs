@@ -46,7 +46,9 @@
 
 (defn table-toolbar
   "Renders a search input, provenance filter pills, and a row-count summary.
-  `state-atom` holds {:query string :provs #{kw}}."
+  `state-atom` holds {:query string :provs #{kw} :page int}. Changes to
+  :query or :provs reset :page to 0 so the user doesn't land on an
+  empty page after filtering."
   [{:keys [state-atom provs-present total shown]}]
   (let [st @state-atom]
     [:div.table-toolbar
@@ -54,7 +56,8 @@
       {:type "text"
        :placeholder "Search rows…"
        :value (:query st)
-       :on-change #(swap! state-atom assoc :query (.. % -target -value))}]
+       :on-change #(swap! state-atom assoc
+                          :query (.. % -target -value) :page 0)}]
      (when (seq provs-present)
        [:div.tt-provs
         (for [p [:event :derived :program :imported]
@@ -65,28 +68,68 @@
                         (when (contains? (:provs st) p) " on"))
             :title (str "Filter to " (name p) " facts only. "
                         (provenance-tooltips p))
-            :on-click #(swap! state-atom update :provs
-                              (fn [s] (let [s (or s #{})]
-                                        (if (contains? s p) (disj s p) (conj s p)))))}
+            :on-click #(swap! state-atom
+                              (fn [s]
+                                (let [ps (or (:provs s) #{})
+                                      ps' (if (contains? ps p) (disj ps p)
+                                                               (conj ps p))]
+                                  (assoc s :provs ps' :page 0))))}
            (name p)])
         (when (seq (:provs st))
-          [:button.prov-clear {:on-click #(swap! state-atom assoc :provs #{})}
+          [:button.prov-clear
+           {:on-click #(swap! state-atom assoc :provs #{} :page 0)}
            "clear"])])
      [:div.tt-summary
       shown " of " total
       (when (and (= shown 0) (pos? total))
         " · no matches")]]))
 
+(defn page-window
+  "Page state derived from a row count and (optional) page-size override.
+  Returns {:page :page-size :start :end :pages}."
+  [state-atom row-count & [size-override]]
+  (let [st       @state-atom
+        size     (or size-override (:page-size st) 200)
+        pages    (max 1 (js/Math.ceil (/ row-count size)))
+        raw-page (or (:page st) 0)
+        page     (-> raw-page (max 0) (min (dec pages)))
+        start    (* page size)
+        end      (min row-count (+ start size))]
+    {:page page :page-size size :start start :end end :pages pages}))
+
+(defn table-pagination
+  "Prev / page-indicator / Next controls. Renders nothing when there's
+  only a single page (total ≤ page-size)."
+  [{:keys [state-atom total page-size]}]
+  (let [{:keys [page pages start end]} (page-window state-atom total page-size)]
+    (when (> pages 1)
+      [:div.table-pagination
+       [:button.ghost.small
+        {:disabled (zero? page)
+         :on-click #(swap! state-atom update :page (fnil dec 0))}
+        "← Prev"]
+       [:span.page-indicator
+        "rows " (inc start) "–" end " of " total
+        " · page " (inc page) " of " pages]
+       [:button.ghost.small
+        {:disabled (>= (inc page) pages)
+         :on-click #(swap! state-atom update :page (fnil inc 0))}
+        "Next →"]])))
+
 (defn sort-indicator [dir]
   (case dir :asc " ▲" :desc " ▼" ""))
 
 (defn cycle-sort
-  "Cycle through nil → :asc → :desc → nil for a given column."
+  "Cycle through nil → :asc → :desc → nil for a given column. Resets :page
+  to 0 since changing the sort can shift which rows fall on the current
+  page."
   [ui-state col]
-  (swap! ui-state update :sort
-         (fn [{:keys [col-cur dir]}]
-           (cond
-             (not= col col-cur) {:col-cur col :dir :asc}
-             (= dir :asc)       {:col-cur col :dir :desc}
-             (= dir :desc)      {:col-cur nil :dir nil}
-             :else              {:col-cur col :dir :asc}))))
+  (swap! ui-state
+         (fn [s]
+           (let [{:keys [col-cur dir]} (:sort s)
+                 sort' (cond
+                         (not= col col-cur) {:col-cur col :dir :asc}
+                         (= dir :asc)       {:col-cur col :dir :desc}
+                         (= dir :desc)      {:col-cur nil :dir nil}
+                         :else              {:col-cur col :dir :asc})]
+             (assoc s :sort sort' :page 0)))))

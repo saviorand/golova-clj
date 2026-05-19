@@ -8,7 +8,8 @@
             [reagent.core :as r]
             [golova.state :as state :refer [app-state]]
             [golova.ui.common :refer [atom-link pred-link]]
-            [golova.ui.table :refer [table-toolbar sort-key sort-indicator
+            [golova.ui.table :refer [table-toolbar table-pagination page-window
+                                     sort-key sort-indicator
                                      cycle-sort row-matches?
                                      provenance-tooltips]]
             [golova.ui.typed :refer [constructor-type-map type-value]]))
@@ -35,7 +36,7 @@
         initial (rules->text (domain-rule-clauses current-domain))
         local (r/atom {:text initial :loaded current-domain
                        :saved? true :err nil})
-        table-state (r/atom {:query "" :provs #{}
+        table-state (r/atom {:query "" :provs #{} :page 0 :page-size 200
                              :sort {:col-cur nil :dir nil}})]
     (fn []
       (let [domain-id (state/current-id)
@@ -108,7 +109,9 @@
                                         (sort-by (comp sort-key k) filtered)))
                                   filtered))
                               filtered))
-                 capped (take 200 filtered)
+                 {:keys [page-size start end pages]}
+                   (page-window table-state (count filtered))
+                 capped (->> filtered (drop start) (take page-size))
                  sort-cur (:col-cur sort)
                  sort-dir (:dir sort)
                  header (fn [i label]
@@ -120,8 +123,9 @@
               [:h3.materialized-h
                "Stored facts"
                [:span.count-hint (count rows) " total"
-                (when (> (count filtered) 200) (str " · showing first 200 of "
-                                                    (count filtered)))]
+                (when (> pages 1)
+                  (str " · showing rows " (inc start) "–" end
+                       " of " (count filtered)))]
                (when (seq rejections)
                  [:span.rejection-count
                   (str " · " (count rejections) " rejected by schema")])]
@@ -139,6 +143,10 @@
                 :provs-present provs-present
                 :total (count rows)
                 :shown (count filtered)}]
+              [table-pagination
+               {:state-atom table-state
+                :total (count filtered)
+                :page-size 200}]
               [:table.facts
                [:thead [:tr
                         [header 0 "subject"]
