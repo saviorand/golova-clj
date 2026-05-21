@@ -39,6 +39,28 @@ npx shadow-cljs watch app          # serves on port 8088 (README says 8089, it's
 Wait for `Build completed` after edits. Use the `browser-smoke-test` skill
 for actual UI verification — `Build completed` only proves no syntax errors.
 
+## Probing the live app (cljs REPL from bash)
+
+When the watch is running, you can evaluate ClojureScript in the connected
+browser runtime without spinning up nREPL/Calva — useful for inspecting
+`app-state`, running ad-hoc queries against the live `:db`, or sanity-
+checking a function before editing more code. Much faster than
+`println` + recompile + refresh.
+
+```bash
+npx shadow-cljs clj-eval \
+  '(shadow.cljs.devtools.api/cljs-eval :app "(require (quote [golova.state :as s])) (keys @s/app-state)" {})'
+```
+
+Returns `{:results ["..."] :out "" :err "..." :ns cljs.user}`. The form's
+return value is the *string* inside `:results`. `:err` is noisy (datahike
+`:redef` warnings on every require) but harmless when `:results` is
+non-empty — read past it.
+
+Quoting note: the outer shell single-quotes the clj form; inside, use `\"`
+or the `(quote ...)` reader for cljs-side quoting. A browser tab must be
+connected to the watch (check shadow's dashboard at localhost:9630).
+
 ## The rebuild loop
 
 This is the central trick. After ANY state-changing operation

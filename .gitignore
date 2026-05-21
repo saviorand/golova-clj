@@ -2,3 +2,6 @@
 .cpcache
 node_modules
 public/js/cljs-runtime
+.calva
+.clj-kondo
+.lsp
