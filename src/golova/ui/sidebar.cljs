@@ -44,11 +44,11 @@
       (mapcat #(walk % 0) (sort-by :label (get by-parent nil []))))))
 
 (defn sidebar []
-  (let [{:keys [current-domain selection expanded expanded-subs]} @app-state
+  (let [{:keys [current-domain selection expanded expanded-subs sidebar-mobile-open?]} @app-state
         domains (state/domains-list)
         on-home? (= :home (:kind selection))
         sub-exp? (fn [id k] (contains? (or expanded-subs #{}) [id k]))]
-    [:aside
+    [:aside {:class (when sidebar-mobile-open? "mobile-open")}
      [:div.brand
       [:span.logo "G"]
       [:span "Golova"]
@@ -60,7 +60,7 @@
 
      [:div.home-link {:class (when on-home? "active")
                       :on-click #(state/go-home!)}
-      [:span.icon "🏠"]
+      [:span.icon "⌂"]
       [:span.lbl "Home"]]
 
      [:div.section

@@ -42,6 +42,10 @@
                           (state/run-query t)))))]
     [:div
      [:div.topbar
+      [:button.hamburger
+       {:title "Open sidebar"
+        :on-click #(state/toggle-sidebar-mobile!)}
+       "☰"]
       [:input.query
        {:placeholder "Ask. e.g. parent(?p, ?c)"
         :spellCheck "false"

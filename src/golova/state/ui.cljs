@@ -5,20 +5,30 @@
   (:require [golova.state.core :as core :refer [app-state]]))
 
 ;; ---------------------------------------------------------------------------
+;; Mobile sidebar drawer
+
+(defn toggle-sidebar-mobile! []
+  (swap! app-state update :sidebar-mobile-open? not))
+
+(defn close-sidebar-mobile! []
+  (swap! app-state assoc :sidebar-mobile-open? false))
+
+;; ---------------------------------------------------------------------------
 ;; Selection / navigation
 
 (defn select! [sel]
-  (swap! app-state assoc :selection sel)
+  (swap! app-state assoc :selection sel :sidebar-mobile-open? false)
   (core/save!))
 
 (defn go-home! []
-  (swap! app-state assoc :selection {:kind :home})
+  (swap! app-state assoc :selection {:kind :home} :sidebar-mobile-open? false)
   (core/save!))
 
 (defn switch-domain! [id]
   (swap! app-state assoc
          :current-domain id
          :selection {:kind :rules :domain id}
+         :sidebar-mobile-open? false
          :error nil)
   (core/save!))
 
