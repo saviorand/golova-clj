@@ -19,7 +19,7 @@
     views/rule.cljs       — single-rule page
     views/query.cljs      — saved query page
     views/entity.cljs     — entity (atom) page"
-  (:require [golova.state :refer [app-state]]
+  (:require [golova.state :as state :refer [app-state]]
             [golova.ui.sidebar :refer [sidebar]]
             [golova.ui.topbar :refer [topbar]]
             [golova.ui.home :refer [home-view]]
@@ -52,11 +52,15 @@
         [home-view]))))
 
 (defn root []
-  [:<>
-   [sidebar]
-   [:main
-    [topbar]
-    [main]]
-   [modal]
-   [popover]
-   [palette]])
+  (let [mobile-open? (:sidebar-mobile-open? @app-state)]
+    [:<>
+     [sidebar]
+     (when mobile-open?
+       [:div.sidebar-overlay
+        {:on-click #(state/close-sidebar-mobile!)}])
+     [:main
+      [topbar]
+      [main]]
+     [modal]
+     [popover]
+     [palette]]))

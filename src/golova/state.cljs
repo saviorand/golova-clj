@@ -108,6 +108,8 @@
 ;; ---------------------------------------------------------------------------
 ;; ui
 
+(def toggle-sidebar-mobile! ui/toggle-sidebar-mobile!)
+(def close-sidebar-mobile!  ui/close-sidebar-mobile!)
 (def select!            ui/select!)
 (def go-home!           ui/go-home!)
 (def switch-domain!     ui/switch-domain!)
