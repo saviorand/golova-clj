@@ -7,7 +7,7 @@ compatibility_date = "2024-09-01"
 OWNER = "saviorand"
 REPO = "golova-kb"
 BRANCH = "main"
-ALLOWED_ORIGIN = "http://localhost:8088"
+ALLOWED_ORIGIN = "https://saviorand.github.io,http://localhost:8088"
 
 # Secrets are set via:
 #   wrangler secret put GITHUB_PAT
