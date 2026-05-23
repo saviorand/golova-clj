@@ -5,3 +5,4 @@ public/js/cljs-runtime
 .calva
 .clj-kondo
 .lsp
+linux-install.sh
