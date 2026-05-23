@@ -1187,23 +1187,43 @@ button.add-fact { white-space: nowrap; }
 /* results: truncation marker */
 .results .summary .trunc { color: var(--dim); }
 
-/* settings overlay sections */
-.modal-card .settings-section { margin-bottom: 14px; }
-.modal-card .settings-section h4 {
-  margin: 4px 0 8px; font-size: 11px; color: var(--muted);
+/* settings sections — used in both settings-view and (legacy) modal */
+.settings-section { margin-bottom: 28px; }
+.settings-section h4 {
+  margin: 0 0 4px; font-size: 11px; color: var(--muted);
   text-transform: uppercase; letter-spacing: .04em; font-weight: 500;
 }
-.modal-card .settings-row {
-  display: flex; gap: 14px; align-items: flex-start;
-  padding: 12px 0; border-top: 1px solid var(--border);
+.settings-row {
+  display: flex; gap: 20px; align-items: flex-start;
+  padding: 14px 0; border-top: 1px solid var(--border);
 }
-.modal-card .settings-row .lbl {
-  flex: 1; font-size: 13px; color: var(--text); font-weight: 500;
+.settings-row .lbl {
+  flex: 1; font-size: 13.5px; color: var(--text); font-weight: 500;
+  min-width: 0;
 }
-.modal-card .settings-row .hint {
-  font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px;
+.settings-row .hint {
+  font-weight: 400; color: var(--muted); font-size: 12.5px; margin-top: 3px;
+  line-height: 1.5;
 }
-.modal-card .settings-row.danger .lbl { color: var(--bad); }
+.settings-row.danger .lbl { color: var(--bad); }
+.settings-controls {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  flex-shrink: 0;
+}
+.settings-input {
+  width: 320px; max-width: 100%;
+}
+.radio-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; cursor: pointer;
+}
+.settings-hint { font-size: 12.5px; padding: 6px 0; color: var(--muted); }
+.settings-hint.err { color: var(--bad); }
+
+/* keep modal settings styling for the few modals that still use it */
+.modal-card .settings-section { margin-bottom: 14px; }
+.modal-card .settings-section h4 { margin: 4px 0 8px; }
+.modal-card .settings-row { padding: 10px 0; gap: 14px; }
 .modal-card .settings-row button { margin-left: 6px; }
 
 /* ======================================================================
@@ -1269,6 +1289,15 @@ button.add-fact { white-space: nowrap; }
 
   /* Sync inputs fill available width */
   .modal-card .settings-row input {
+    width: 100%;
+  }
+
+  /* Settings page: stack label above controls on mobile */
+  .settings-row {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .settings-input {
     width: 100%;
   }
 

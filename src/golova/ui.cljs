@@ -32,7 +32,8 @@
             [golova.ui.views.rule :refer [rule-view]]
             [golova.ui.views.query :refer [query-view]]
             [golova.ui.views.entity :refer [entity-view]]
-            [golova.ui.views.domain :refer [domain-view]]))
+            [golova.ui.views.domain :refer [domain-view]]
+            [golova.ui.views.settings :refer [settings-view]]))
 
 (defn main
   "Choose the main view based on (:selection app-state)."
@@ -47,6 +48,7 @@
       :query     [query-view (:name sel)]
       :entity    [entity-view (:name sel)]
       :domain    [domain-view (or (:domain sel) (:current-domain s))]
+      :settings  [settings-view]
       (if (:current-domain s)
         [rules-view]
         [home-view]))))
