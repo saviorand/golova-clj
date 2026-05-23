@@ -10,6 +10,8 @@
             [golova.csv :as csv]
             [golova.ui.typed :refer [chip-editor]]))
 
+(declare sync-settings-section)
+
 ;; ---------------------------------------------------------------------------
 ;; Tiny text-input helpers (DOM-id-based, used by the small modal forms)
 
@@ -367,6 +369,108 @@
            "Convert"]]]))))
 
 ;; ---------------------------------------------------------------------------
+;; Sync settings (Settings modal section)
+
+(defn sync-settings-section
+  "Form-2 component: backend radio (Local / Git), Worker URL, bearer token,
+  branch, and a Sync-now action. Persists to localStorage on Save and
+  rebinds the visibility triggers."
+  []
+  (let [initial  (or (:sync-config @app-state) {})
+        kind*    (r/atom (or (:backend-kind @app-state) :local))
+        url*     (r/atom (or (:worker-url initial) ""))
+        token*   (r/atom (or (:bearer-token initial) ""))
+        branch*  (r/atom (or (:branch initial) "main"))
+        msg*     (r/atom nil)]
+    (fn []
+      (let [sync-state (:sync-state @app-state)
+            status     (or (:status sync-state) :idle)
+            saved?     (and (= @kind* (:backend-kind @app-state))
+                            (= {:worker-url   @url*
+                                :bearer-token @token*
+                                :branch       @branch*}
+                               (:sync-config @app-state)))
+            save!      (fn []
+                         (storage/save-backend-kind! @kind*)
+                         (storage/save-sync-config! {:worker-url   @url*
+                                                     :bearer-token @token*
+                                                     :branch       @branch*})
+                         (swap! app-state assoc
+                                :backend-kind @kind*
+                                :sync-config  {:worker-url   @url*
+                                               :bearer-token @token*
+                                               :branch       @branch*})
+                         (state/bind-sync-triggers!)
+                         (reset! msg* {:kind :ok :text "Saved."}))]
+        [:div.settings-section
+         [:h4 "Sync"]
+         [:div.settings-row
+          [:div.lbl "Backend"
+           [:div.hint "Local keeps everything in this browser. Git syncs to a GitHub repo via a Cloudflare Worker (see worker/ in the repo)."]]
+          [:div
+           [:label {:style {:margin-right "10px"}}
+            [:input {:type "radio"
+                     :checked (= :local @kind*)
+                     :on-change #(reset! kind* :local)}]
+            " Local"]
+           [:label
+            [:input {:type "radio"
+                     :checked (= :git @kind*)
+                     :on-change #(reset! kind* :git)}]
+            " Git"]]]
+         (when (= :git @kind*)
+           [:<>
+            [:div.settings-row
+             [:div.lbl "Worker URL"
+              [:div.hint "e.g. https://golova-sync.your-name.workers.dev"]]
+             [:input {:value @url*
+                      :on-change #(reset! url* (.. % -target -value))
+                      :placeholder "https://…workers.dev"
+                      :style {:min-width "320px"}}]]
+            [:div.settings-row
+             [:div.lbl "Bearer token"
+              [:div.hint "The shared secret you set via `wrangler secret put BEARER_TOKEN`. Stored in this browser only; never committed."]]
+             [:input {:type "password"
+                      :value @token*
+                      :on-change #(reset! token* (.. % -target -value))
+                      :placeholder "…"
+                      :style {:min-width "320px"}}]]
+            [:div.settings-row
+             [:div.lbl "Branch"
+              [:div.hint "Usually 'main'."]]
+             [:input {:value @branch*
+                      :on-change #(reset! branch* (.. % -target -value))
+                      :placeholder "main"
+                      :style {:min-width "120px"}}]]])
+         [:div.settings-row
+          [:div.lbl "Status"
+           [:div.hint (case status
+                        :idle    "Idle."
+                        :pulling "Pulling from remote…"
+                        :pushing "Pushing to remote…"
+                        :error   (str "Error: " (:error-msg sync-state))
+                        (str status))]]
+          [:div
+           [:button {:on-click save!} (if saved? "Saved" "Save")]
+           (when (= :git @kind*)
+             [:button.primary
+              {:disabled (or (str/blank? @url*) (str/blank? @token*)
+                             (contains? #{:pulling :pushing} status))
+               :style {:margin-left "8px"}
+               :on-click (fn []
+                           (when-not saved? (save!))
+                           (-> (state/sync!)
+                               (.then  (fn [_] (reset! msg* {:kind :ok :text "Sync OK."})))
+                               (.catch (fn [e]
+                                         (reset! msg* {:kind :err
+                                                       :text (or (.-message e) (str e))})))))}
+              "Sync now"])]]
+         (when @msg*
+           [:div.modal-sub
+            {:style {:color (case (:kind @msg*) :err "var(--bad)" "var(--good)")}}
+            (:text @msg*)])]))))
+
+;; ---------------------------------------------------------------------------
 ;; Top-level modal dispatch
 
 (defn modal []
@@ -474,6 +578,7 @@
           [:<>
            [:h3 "Settings"]
            [:div.modal-sub "Local data lives in this browser's storage."]
+           [sync-settings-section]
            [:div.settings-section
             [:h4 "Data"]
             [:div.settings-row

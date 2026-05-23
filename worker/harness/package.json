@@ -1,0 +1,10 @@
+{
+  "name": "golova-sync-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "run": "node run.mjs",
+    "race": "node concurrent.mjs"
+  }
+}

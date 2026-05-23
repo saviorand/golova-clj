@@ -9,4 +9,11 @@
    :compiler-options {:infer-externs :auto
                       :warnings-as-errors false
                       :warnings {:fn-deprecated false
+                                 :protocol-multiple-impls false}}}
+  :test
+  {:target    :node-test
+   :output-to "out/test.js"
+   :ns-regexp "-test$"
+   :compiler-options {:warnings-as-errors false
+                      :warnings {:fn-deprecated false
                                  :protocol-multiple-impls false}}}}}

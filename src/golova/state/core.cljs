@@ -31,7 +31,13 @@
     :home {:onboarding-collapsed? true}
     :last-saved nil
     :error nil
-    :first-run? false}))
+    :first-run? false
+    ;; Sync layer (see state/sync.cljs). Loaded at boot from their own
+    ;; localStorage keys, not part of the snapshot — sync-config carries
+    ;; the bearer token and must never end up on GitHub.
+    :backend-kind  :local         ; :local | :git
+    :sync-config   nil            ; {:worker-url :bearer-token :branch}
+    :sync-state    {:status :idle}}))
 
 (defn current-id [] (:current-domain @app-state))
 (defn device-id [] (:device-id @app-state))

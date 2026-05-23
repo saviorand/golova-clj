@@ -7,6 +7,29 @@
 
 (def ^:private result-row-cap 200)
 
+(defn- sync-button
+  "Renders the Sync button + inline status pill. No-op when backend-kind
+  isn't :git. Click triggers a pull-then-push round-trip."
+  []
+  (let [{:keys [backend-kind sync-state]} @app-state]
+    (when (= :git backend-kind)
+      (let [status (or (:status sync-state) :idle)
+            label  (case status
+                     :idle    "Sync"
+                     :pulling "Pulling…"
+                     :pushing "Pushing…"
+                     :error   "Sync (error)"
+                     "Sync")
+            err    (:error-msg sync-state)]
+        [:button.ghost
+         {:title    (or err "Pull from GitHub, then push local changes")
+          :disabled (contains? #{:pulling :pushing} status)
+          :class    (when (= :error status) "danger")
+          :on-click (fn []
+                      (-> (state/sync!)
+                          (.catch (fn [_] nil))))}
+         label]))))
+
 (defn topbar []
   (let [{:keys [top-query]} @app-state
         text (:text top-query)
@@ -28,7 +51,8 @@
                        (when (= "Enter" (.-key e))
                          (.preventDefault e)
                          (run!)))}]
-      [:button.primary {:on-click run!} "Run"]]
+      [:button.primary {:on-click run!} "Run"]
+      [sync-button]]
      (when result
        [:div.top-result
         (cond

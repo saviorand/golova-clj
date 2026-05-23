@@ -29,7 +29,8 @@
             [golova.state.inspect :as inspect]
             [golova.state.query :as query]
             [golova.state.csv :as csv]
-            [golova.state.convert :as convert]))
+            [golova.state.convert :as convert]
+            [golova.state.sync :as sync]))
 
 ;; ---------------------------------------------------------------------------
 ;; core
@@ -160,3 +161,14 @@
 (def predicate-fact-count        convert/predicate-fact-count)
 (def cleanup-empty-predicates!   convert/cleanup-empty-predicates!)
 (def apply-conversion-plan!      convert/apply-conversion-plan!)
+
+;; ---------------------------------------------------------------------------
+;; sync
+
+(def snapshot->files        sync/snapshot->files)
+(def files->snapshot        sync/files->snapshot)
+(def sync-pull!             sync/sync-pull!)
+(def sync-push!             sync/sync-push!)
+(def sync!                  sync/sync!)
+(def bind-sync-triggers!    sync/bind-sync-triggers!)
+(def unbind-sync-triggers!  sync/unbind-sync-triggers!)

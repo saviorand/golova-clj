@@ -17,8 +17,10 @@
 ;; ---------------------------------------------------------------------------
 ;; LocalStorage
 
-(def ^:private state-key   "golova.state.v1")
-(def ^:private device-key  "golova.device-id")
+(def ^:private state-key        "golova.state.v1")
+(def ^:private device-key       "golova.device-id")
+(def ^:private backend-kind-key "golova.backend-kind")
+(def ^:private sync-config-key  "golova.sync-config")
 
 (defrecord LocalStorage []
   Backend
@@ -44,6 +46,32 @@
       (let [id (str (random-uuid))]
         (.setItem js/localStorage device-key id)
         id)))
+
+;; ---------------------------------------------------------------------------
+;; Sync settings (per-device, NOT part of the snapshot — bearer token must
+;; never end up in the synced files on GitHub).
+
+(defn load-backend-kind
+  "Read :backend-kind from its own localStorage key. Defaults to :local."
+  []
+  (let [raw (.getItem js/localStorage backend-kind-key)]
+    (case raw
+      "git"   :git
+      "local" :local
+      :local)))
+
+(defn save-backend-kind! [k]
+  (.setItem js/localStorage backend-kind-key (name k)))
+
+(defn load-sync-config
+  "Read :sync-config (map with :worker-url :bearer-token :branch) or nil."
+  []
+  (when-let [raw (.getItem js/localStorage sync-config-key)]
+    (try (reader/read-string raw)
+         (catch :default _ nil))))
+
+(defn save-sync-config! [cfg]
+  (.setItem js/localStorage sync-config-key (pr-str cfg)))
 
 ;; ---------------------------------------------------------------------------
 ;; Export / import — for moving the log between devices manually until Drive

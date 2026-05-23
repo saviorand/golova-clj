@@ -4,6 +4,7 @@
   (:require [reagent.core :as r]
             [reagent.dom.client :as rdom]
             [golova.state :as state :refer [app-state]]
+            [golova.state.sync :as sync]
             [golova.storage :as storage]
             [golova.router :as router]
             [golova.ui :as ui]))
@@ -53,7 +54,10 @@
 
   ;; Hydrate from localStorage backend.
   (let [backend (storage/local)]
-    (swap! app-state assoc :device-id (storage/ensure-device-id!))
+    (swap! app-state assoc
+           :device-id     (storage/ensure-device-id!)
+           :backend-kind  (storage/load-backend-kind)
+           :sync-config   (storage/load-sync-config))
     (state/load-or-seed! backend))
   (state/rebuild!)
 
@@ -66,6 +70,9 @@
     (reset! root-atom root)
     (render!))
 
-  (bind-shortcuts!))
+  (bind-shortcuts!)
+
+  ;; Sync triggers — no-op unless backend-kind is :git.
+  (sync/bind-sync-triggers!))
 
 ;; Reagent auto-rerenders on app-state change.
