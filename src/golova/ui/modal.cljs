@@ -425,23 +425,20 @@
               [:div.hint "e.g. https://golova-sync.your-name.workers.dev"]]
              [:input {:value @url*
                       :on-change #(reset! url* (.. % -target -value))
-                      :placeholder "https://…workers.dev"
-                      :style {:min-width "320px"}}]]
+                      :placeholder "https://…workers.dev"}]]
             [:div.settings-row
              [:div.lbl "Bearer token"
               [:div.hint "The shared secret you set via `wrangler secret put BEARER_TOKEN`. Stored in this browser only; never committed."]]
              [:input {:type "password"
                       :value @token*
                       :on-change #(reset! token* (.. % -target -value))
-                      :placeholder "…"
-                      :style {:min-width "320px"}}]]
+                      :placeholder "…"}]]
             [:div.settings-row
              [:div.lbl "Branch"
               [:div.hint "Usually 'main'."]]
              [:input {:value @branch*
                       :on-change #(reset! branch* (.. % -target -value))
-                      :placeholder "main"
-                      :style {:min-width "120px"}}]]])
+                      :placeholder "main"}]]])
          [:div.settings-row
           [:div.lbl "Status"
            [:div.hint (case status
