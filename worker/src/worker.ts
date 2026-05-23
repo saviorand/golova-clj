@@ -128,7 +128,8 @@ async function commitMany(env: Env, baseSha: string, files: Record<string, strin
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const origin = request.headers.get("Origin") ?? "";
-    const allowed = origin === env.ALLOWED_ORIGIN ? origin : "";
+    const allowedOrigins = env.ALLOWED_ORIGIN.split(",").map(s => s.trim());
+    const allowed = allowedOrigins.includes(origin) ? origin : "";
     const cors = corsHeaders(allowed);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     // Auth
