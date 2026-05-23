@@ -9,6 +9,22 @@
             [golova.csv :as csv]))
 
 ;; ---------------------------------------------------------------------------
+;; Sync status helpers
+
+(defn- short-sha [sha]
+  (when sha (subs (str sha) 0 (min 8 (count (str sha))))))
+
+(defn- time-ago [t]
+  (when t
+    (let [s (long (/ (- (.now js/Date) t) 1000))]
+      (cond
+        (< s 5)     "just now"
+        (< s 60)    (str s "s ago")
+        (< s 3600)  (str (long (/ s 60)) "m ago")
+        (< s 86400) (str (long (/ s 3600)) "h ago")
+        :else       (str (long (/ s 86400)) "d ago")))))
+
+;; ---------------------------------------------------------------------------
 ;; Sync section (Form-2: local state for the config fields)
 
 (defn- sync-section []
@@ -81,6 +97,74 @@
                :on-change #(reset! branch* (.. % -target -value))
                :placeholder "main"}]]])
 
+         (when (= :git @kind*)
+           (let [pending      (state/pending-changes)
+                 pending-n    (or (:count pending) 0)
+                 busy?        (contains? #{:pulling :pushing} status)
+                 missing-cfg? (or (str/blank? @url*) (str/blank? @token*))
+                 run!         (fn [op success-msg]
+                                (when-not saved? (save!))
+                                (-> (op)
+                                    (.then  #(reset! msg* {:kind :ok :text success-msg}))
+                                    (.catch #(reset! msg* {:kind :err
+                                                           :text (or (.-message %) (str %))}))))
+                 pull-confirm-and-run!
+                 (fn []
+                   (when (or (zero? pending-n)
+                             (js/confirm
+                               (str "Pull will overwrite "
+                                    pending-n " unpushed local change"
+                                    (when (not= 1 pending-n) "s")
+                                    " on this device. Continue?")))
+                     (run! state/sync-pull! "Pulled.")))]
+             [:<>
+              [:div.settings-row
+               [:div.lbl "Last pull"
+                [:div.hint
+                 (if-let [t (:last-pulled-at sync-state)]
+                   (str (time-ago t) " • " (short-sha (:last-pulled-head sync-state)))
+                   "Never (this session).")]]
+               [:div.settings-controls
+                [:button {:disabled (or busy? missing-cfg?)
+                          :on-click pull-confirm-and-run!}
+                 "Pull ↓"]]]
+
+              [:div.settings-row
+               [:div.lbl "Last push"
+                [:div.hint
+                 (if-let [t (:last-pushed-at sync-state)]
+                   (str (time-ago t) " • " (short-sha (:last-pushed-head sync-state)))
+                   "Never (this session).")]]
+               [:div.settings-controls
+                [:button {:disabled (or busy? missing-cfg?
+                                        (nil? (:last-pulled-head sync-state))
+                                        (zero? pending-n))
+                          :on-click #(run! state/sync-push! "Pushed.")}
+                 "Push ↑"]]]
+
+              [:div.settings-row
+               [:div.lbl "Local changes"
+                [:div.hint
+                 (case (:status pending)
+                   :unknown "Pull first to see what's pending."
+                   :synced  "Up to date with last pull."
+                   :pending (str pending-n " file"
+                                 (when (not= 1 pending-n) "s")
+                                 " pending push."))]]
+               [:div.settings-controls
+                [:button.primary
+                 {:disabled (or busy? missing-cfg?)
+                  :title "Pull, then push if anything changed."
+                  :on-click (fn []
+                              (when (or (zero? pending-n)
+                                        (js/confirm
+                                          (str "Sync will pull from remote (overwriting "
+                                               pending-n " unpushed local change"
+                                               (when (not= 1 pending-n) "s")
+                                               ") and then push. Continue?")))
+                                (run! state/sync! "Sync OK.")))}
+                 "Sync ↕"]]]]))
+
          [:div.settings-row
           [:div.lbl "Status"
            [:div.hint (case status
@@ -90,18 +174,7 @@
                         :error   (str "Error: " (:error-msg sync-state))
                         (str status))]]
           [:div.settings-controls
-           [:button {:on-click save!} (if saved? "Saved" "Save")]
-           (when (= :git @kind*)
-             [:button.primary
-              {:disabled (or (str/blank? @url*) (str/blank? @token*)
-                             (contains? #{:pulling :pushing} status))
-               :on-click (fn []
-                           (when-not saved? (save!))
-                           (-> (state/sync!)
-                               (.then  #(reset! msg* {:kind :ok :text "Sync OK."}))
-                               (.catch #(reset! msg* {:kind :err
-                                                      :text (or (.-message %) (str %))}))))}
-              "Sync now"])]]
+           [:button {:on-click save!} (if saved? "Saved" "Save")]]]
 
          (when @msg*
            [:div.settings-hint

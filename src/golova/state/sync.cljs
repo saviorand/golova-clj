@@ -497,30 +497,33 @@
   (or (empty? files) (not (contains? files "meta.edn"))))
 
 (defn ^:private apply-pulled-snapshot! [{:keys [head-sha files]}]
-  (cond
-    (empty-or-no-meta? files)
-    ;; First-push case: don't clobber local state. Record the head sha so
-    ;; the next push has a base, and stash an empty :last-pulled-files so
-    ;; diff-files will include the entire current snapshot.
-    (do (swap! app-state update :sync-state
+  (let [now (.now js/Date)]
+    (cond
+      (empty-or-no-meta? files)
+      ;; First-push case: don't clobber local state. Record the head sha so
+      ;; the next push has a base, and stash an empty :last-pulled-files so
+      ;; diff-files will include the entire current snapshot.
+      (do (swap! app-state update :sync-state
+                 (fn [s] (assoc (or s {})
+                                :last-pulled-head  head-sha
+                                :last-pulled-files {}
+                                :last-pulled-at    now
+                                :last-warnings     [])))
+          {:warnings [] :head-sha head-sha :first-push? true})
+
+      :else
+      (let [{:keys [snapshot warnings]} (files->snapshot files)]
+        (when (seq warnings)
+          (js/console.warn "sync: pulled files have warnings"
+                           (clj->js warnings)))
+        (persist/import-snapshot! snapshot)
+        (swap! app-state update :sync-state
                (fn [s] (assoc (or s {})
                               :last-pulled-head  head-sha
-                              :last-pulled-files {}
-                              :last-warnings     [])))
-        {:warnings [] :head-sha head-sha :first-push? true})
-
-    :else
-    (let [{:keys [snapshot warnings]} (files->snapshot files)]
-      (when (seq warnings)
-        (js/console.warn "sync: pulled files have warnings"
-                         (clj->js warnings)))
-      (persist/import-snapshot! snapshot)
-      (swap! app-state update :sync-state
-             (fn [s] (assoc (or s {})
-                            :last-pulled-head  head-sha
-                            :last-pulled-files files
-                            :last-warnings     (vec warnings))))
-      {:warnings warnings :head-sha head-sha})))
+                              :last-pulled-files files
+                              :last-pulled-at    now
+                              :last-warnings     (vec warnings))))
+        {:warnings warnings :head-sha head-sha}))))
 
 (defn sync-pull!
   "Pull remote, replace local state, rebuild. Returns a Promise resolving to
@@ -574,13 +577,16 @@
                                               :current-head current-head}))))
 
                       :else
-                      (do (swap! app-state update :sync-state
-                                 (fn [s] (assoc (or s {})
-                                                :last-pushed-head head-sha
-                                                :last-pulled-head head-sha
-                                                :last-pulled-files files)))
-                          (set-status! :idle)
-                          {:head-sha head-sha}))))
+                      (let [now (.now js/Date)]
+                        (swap! app-state update :sync-state
+                               (fn [s] (assoc (or s {})
+                                              :last-pushed-head head-sha
+                                              :last-pushed-at   now
+                                              :last-pulled-head head-sha
+                                              :last-pulled-files files
+                                              :last-pulled-at   now)))
+                        (set-status! :idle)
+                        {:head-sha head-sha}))))
            (.catch (fn [^js e]
                      (set-status! :error (or (.-message e) (str e)))
                      (throw e))))))))
@@ -590,6 +596,24 @@
   []
   (-> (sync-pull!)
       (.then (fn [_] (sync-push!)))))
+
+(defn pending-changes
+  "How many files differ between the current local snapshot and the last
+  successfully-pulled file set. Returns
+    {:status :synced}              — last-pulled known, zero diff
+    {:status :pending :count N}    — last-pulled known, N files would push
+    {:status :unknown}             — never pulled this session; can't tell.
+  Pure read against `app-state`; safe to call on every render."
+  []
+  (let [s (:sync-state @app-state)]
+    (if (nil? (:last-pulled-head s))
+      {:status :unknown}
+      (let [files   (snapshot->files (core/serializable @app-state))
+            changed (diff-files (:last-pulled-files s {}) files)
+            n       (count changed)]
+        (if (zero? n)
+          {:status :synced}
+          {:status :pending :count n})))))
 
 ;; ===========================================================================
 ;; Trigger plumbing
