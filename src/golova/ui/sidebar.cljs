@@ -227,7 +227,7 @@
       [:div.foot-row
        [:button.ghost
         {:title "Settings"
-         :on-click #(state/open-modal! {:kind :settings})}
+         :on-click #(state/select! {:kind :settings})}
         "⚙ Settings"]]
       [:div.kshort [:span.lbl "Palette"] [:kbd "⌘K"]]
       [:div.kshort [:span.lbl "Rebuild"] [:kbd "⌘↵"]]]]))
