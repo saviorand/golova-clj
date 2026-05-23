@@ -36,15 +36,19 @@
 (defn ^:private pretty
   "Pretty-print `form` to a string suitable for committing. Stable across
   runs: no print-length/level truncation, deterministic key order via
-  pprint, trailing newline."
+  pprint, trailing newline. Per-line right-trim because pprint's
+  code-dispatch occasionally leaves trailing whitespace on some lines but
+  not others, which renders as gratuitous diff noise."
   [form]
-  (str/trim-newline
-    (with-out-str
-      (binding [*print-length* nil
-                *print-level*  nil
-                pprint/*print-pprint-dispatch* pprint/code-dispatch]
-        (pprint/pprint form))))
-  )
+  (let [raw (with-out-str
+              (binding [*print-length* nil
+                        *print-level*  nil
+                        pprint/*print-pprint-dispatch* pprint/code-dispatch]
+                (pprint/pprint form)))]
+    (->> (str/split raw #"\n")
+         (map str/trimr)
+         (str/join "\n")
+         str/trim-newline)))
 
 (defn ^:private edn-str
   "Pretty form + final newline. Files always end in '\\n' so editors
@@ -413,6 +417,15 @@
   (.then (.text resp) (fn [t] (try (js->clj (.parse js/JSON t) :keywordize-keys true)
                                    (catch :default _ {:raw t})))))
 
+(defn unkeywordize-files
+  "js->clj with :keywordize-keys turns the file-path keys of the /snapshot
+  response into keywords (`:domains/starter/events.edn`). The rest of the
+  sync layer keys files by their string path, so undo that transformation
+  here at the seam."
+  [m]
+  (when m
+    (into {} (map (fn [[k v]] [(subs (str k) 1) v])) m)))
+
 (defn fetch-remote!
   "Promise of {:head-sha :files}. Rejects with an ex-info on non-2xx."
   ([] (fetch-remote! {:keepalive? false}))
@@ -427,7 +440,7 @@
                     (-> (parse-json r)
                         (.then (fn [body]
                                  {:head-sha (:head_sha body)
-                                  :files    (:files    body)})))
+                                  :files    (unkeywordize-files (:files body))})))
                     (-> (parse-json r)
                         (.then (fn [body]
                                  (throw (ex-info (or (:error body) "fetch failed")

@@ -105,12 +105,19 @@
   '[[(ancestor ?x ?y) [?x :parent ?y]]
     [(ancestor ?x ?z) [?x :parent ?y] (ancestor ?y ?z)]])
 
-(defn- starter-snap
+(defn starter-snap
   "v2-shape snapshot for first-run users: a single 'Starter' domain with
-  the classic ancestor example."
+  the classic ancestor example.
+
+  Event :id values are content-derived so two machines that independently
+  seed the starter end up with byte-identical events.edn (otherwise the
+  first sync from a fresh second device looks like a full rewrite — see
+  the git-sync proposal §3.5)."
   []
-  (let [mk (fn [op tr] {:id (str (random-uuid)) :at 0 :op op
-                        :source "starter" :triple tr})]
+  (let [mk (fn [op tr]
+             (let [h (hash [:starter-seed op tr])]
+               {:id (str "starter-" (.toString (bit-and h 0x7fffffff) 16))
+                :at 0 :op op :source "starter" :triple tr}))]
     {:version 2
      :current-domain :starter
      :selection {:kind :home}

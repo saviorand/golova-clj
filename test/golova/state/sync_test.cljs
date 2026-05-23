@@ -5,6 +5,7 @@
             [clojure.string :as str]
             [cljs.test :refer-macros [deftest is testing run-tests]]
             [cljs.reader :as reader]
+            [golova.state.persist :as persist]
             [golova.state.sync :as sync]))
 
 ;; ---------------------------------------------------------------------------
@@ -319,3 +320,81 @@
 (deftest diff-files-no-change-empty
   (let [m {"meta.edn" "x"}]
     (is (= {} (sync/diff-files m m)))))
+
+;; ---------------------------------------------------------------------------
+;; unkeywordize-files — guards the parse-json seam.
+;;
+;; The /snapshot response goes through (js->clj … :keywordize-keys true),
+;; which turns the file-path keys ("domains/x/events.edn") into keywords
+;; (:domains/x/events.edn — namespace "domains", name "x/events.edn"). All
+;; consumers downstream look up paths via STRING keys, so we have to undo
+;; that at the seam. Pre-fix, every pull fell into the "first-push" branch
+;; and silently preserved local state.
+
+(deftest unkeywordize-files-restores-string-paths
+  ;; Path keywords with `/` can't be written as literals (reader chokes on
+  ;; double `/`), so build them the same way js->clj does.
+  (let [k (fn [s] (keyword s))]
+    (testing "single-segment path keyword → string"
+      (is (= {"meta.edn" "x"}
+             (sync/unkeywordize-files {(k "meta.edn") "x"}))))
+    (testing "multi-segment path keyword (namespace + name from js->clj)"
+      (is (= {"domains/starter/events.edn" "y"}
+             (sync/unkeywordize-files
+               {(k "domains/starter/events.edn") "y"}))))
+    (testing "nil files map stays nil (first-push branch path)"
+      (is (nil? (sync/unkeywordize-files nil))))
+    (testing "empty map stays empty"
+      (is (= {} (sync/unkeywordize-files {}))))))
+
+(deftest pulled-files-shape-flows-through-empty-or-no-meta-check
+  (testing "after unkeywordize, contains? hits the string key the consumer expects"
+    (let [k (fn [s] (keyword s))
+          pulled (sync/unkeywordize-files
+                   {(k "meta.edn") "{:version 2}"
+                    (k "domains/starter/events.edn") "[]"})]
+      (is (contains? pulled "meta.edn")
+          "pre-fix this returned false because the actual key was :meta.edn"))))
+
+;; ---------------------------------------------------------------------------
+;; Starter snap determinism — two machines first-running independently must
+;; produce byte-identical files.edn output. Pre-fix, every starter event got
+;; a fresh random-uuid, so the second machine's first push rewrote events.edn
+;; with new ids on every triple (visible in commit ca6eea1 in golova-kb).
+
+(deftest starter-snap-is-deterministic-across-calls
+  (let [a (persist/starter-snap)
+        b (persist/starter-snap)]
+    (testing "event ids are stable"
+      (is (= (map :id (:events a)) (map :id (:events b)))))
+    (testing "full events vectors compare equal"
+      (is (= (:events a) (:events b))))))
+
+(deftest starter-snap-pushes-to-byte-identical-files
+  (testing "two independent seeds produce the same files map — no churn on first sync"
+    (let [files-a (sync/snapshot->files (persist/starter-snap))
+          files-b (sync/snapshot->files (persist/starter-snap))]
+      (is (= files-a files-b))
+      (is (= (get files-a "domains/starter/events.edn")
+             (get files-b "domains/starter/events.edn"))))))
+
+(deftest starter-snap-survives-round-trip-with-no-event-diff
+  (testing "seed → push files → pull (files→snapshot) → push again — events.edn byte-identical"
+    (let [files-1 (sync/snapshot->files (persist/starter-snap))
+          {snap   :snapshot}
+          (sync/files->snapshot files-1)
+          files-2 (sync/snapshot->files snap)]
+      (is (= (get files-1 "domains/starter/events.edn")
+             (get files-2 "domains/starter/events.edn"))))))
+
+;; ---------------------------------------------------------------------------
+;; Pretty-printer cleanliness — no trailing whitespace on any line.
+;; (pprint code-dispatch otherwise leaves ", " on some lines but not others,
+;; producing gratuitous diff noise.)
+
+(deftest snapshot-files-have-no-trailing-whitespace
+  (let [files (sync/snapshot->files sample-snap)]
+    (doseq [[path text] files
+            line        (str/split text #"\n")]
+      (is (= line (str/trimr line))
+          (str "trailing whitespace in " path ": " (pr-str line))))))

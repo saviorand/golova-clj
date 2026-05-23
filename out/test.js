@@ -3,7 +3,7 @@
 var shadow$provide = {};
 
 var SHADOW_IMPORT_PATH = __dirname + '/../.shadow-cljs/builds/test/dev/out/cljs-runtime';
-if (__dirname == '.') { SHADOW_IMPORT_PATH = "/Users/valentin.erokhin/GolandProjects/golova/golova-clj/.shadow-cljs/builds/test/dev/out/cljs-runtime"; }
+if (__dirname == '.') { SHADOW_IMPORT_PATH = "/Users/supernaturval/Documents/GitHub/golova-clj/.shadow-cljs/builds/test/dev/out/cljs-runtime"; }
 global.$CLJS = global;
 global.shadow$provide = {};
 try {require('source-map-support').install();} catch (e) {console.warn('no "source-map-support" (run "npm install source-map-support --save-dev" to get it)');}
@@ -1425,6 +1425,7 @@ SHADOW_IMPORT("cljs.tools.reader.impl.commons.js");
 SHADOW_IMPORT("cljs.tools.reader.js");
 SHADOW_IMPORT("cljs.tools.reader.edn.js");
 SHADOW_IMPORT("cljs.reader.js");
+SHADOW_IMPORT("golova.storage.js");
 SHADOW_IMPORT("shadow.js.js");
 SHADOW_IMPORT("shadow.js.shim.module$react.js");
 SHADOW_IMPORT("clojure.walk.js");
@@ -1437,7 +1438,6 @@ SHADOW_IMPORT("reagent.impl.component.js");
 SHADOW_IMPORT("reagent.impl.input.js");
 SHADOW_IMPORT("reagent.impl.template.js");
 SHADOW_IMPORT("reagent.core.js");
-SHADOW_IMPORT("golova.storage.js");
 SHADOW_IMPORT("golova.state.core.js");
 SHADOW_IMPORT("datahike.constants.js");
 SHADOW_IMPORT("clojure.data.js");
