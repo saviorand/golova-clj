@@ -1331,6 +1331,12 @@ button.add-fact { white-space: nowrap; }
     padding: 10px 14px;
     gap: 8px;
   }
+  /* <input size=…> gives the query field an intrinsic min-width that
+     overrides flex shrink, pushing the Sync button off-screen on narrow
+     phones. Override so flex can actually shrink it. */
+  .topbar input.query {
+    min-width: 0;
+  }
 
   .top-result {
     padding: 8px 14px 12px;
