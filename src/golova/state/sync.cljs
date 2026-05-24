@@ -403,12 +403,27 @@
 (defn ^:private config []
   (let [c (:sync-config @app-state)]
     {:worker-url   (str/replace (str (:worker-url c)) #"/+$" "")
-     :bearer-token (:bearer-token c)}))
+     :bearer-token (:bearer-token c)
+     :owner        (:owner c)
+     :repo         (:repo c)
+     :branch       (:branch c)}))
 
 (defn ^:private auth-headers []
   (let [{:keys [bearer-token]} (config)]
     #js {"Authorization" (str "Bearer " bearer-token)
          "Content-Type"  "application/json"}))
+
+(defn ^:private target-query
+  "URL-query string `?owner=…&repo=…&branch=…` for the configured target.
+  Empty fields are omitted so the worker falls back to its env defaults."
+  []
+  (let [{:keys [owner repo branch]} (config)
+        pairs (->> [["owner"  owner]
+                    ["repo"   repo]
+                    ["branch" branch]]
+                   (remove (fn [[_ v]] (or (nil? v) (str/blank? v))))
+                   (map (fn [[k v]] (str k "=" (js/encodeURIComponent v)))))]
+    (if (seq pairs) (str "?" (str/join "&" pairs)) "")))
 
 (defn ^:private set-status! [status & [error-msg]]
   (swap! app-state update :sync-state
@@ -440,12 +455,35 @@
   (when m
     (into {} (map (fn [[k v]] [(subs (str k) 1) v])) m)))
 
+(defn list-repos!
+  "Fetch the list of repos the worker's PAT can reach. Resolves to a vec of
+  {:full-name :default-branch :private?}. Used by the Settings UI to render
+  the repo-selector dropdown. Rejects with ex-info on non-2xx."
+  []
+  (let [{:keys [worker-url]} (config)]
+    (-> (js/fetch (str worker-url "/repos")
+                  #js {:method "GET"
+                       :headers (auth-headers)})
+        (.then (fn [^js r]
+                 (if (.-ok r)
+                   (-> (parse-json r)
+                       (.then (fn [body]
+                                (mapv (fn [r]
+                                        {:full-name      (:full_name r)
+                                         :default-branch (:default_branch r)
+                                         :private?       (:private r)})
+                                      (or (:repos body) [])))))
+                   (-> (parse-json r)
+                       (.then (fn [body]
+                                (throw (ex-info (or (:error body) "list-repos failed")
+                                                {:status (.-status r) :body body})))))))))))
+
 (defn fetch-remote!
   "Promise of {:head-sha :files}. Rejects with an ex-info on non-2xx."
   ([] (fetch-remote! {:keepalive? false}))
   ([{:keys [keepalive?]}]
    (let [{:keys [worker-url]} (config)]
-     (-> (js/fetch (str worker-url "/snapshot")
+     (-> (js/fetch (str worker-url "/snapshot" (target-query))
                    #js {:method "GET"
                         :headers (auth-headers)
                         :keepalive (boolean keepalive?)})
@@ -469,7 +507,7 @@
         payload (clj->js {:base_sha base-sha
                           :files    files
                           :message  message})]
-    (-> (js/fetch (str worker-url "/commit")
+    (-> (js/fetch (str worker-url "/commit" (target-query))
                   #js {:method  "POST"
                        :headers (auth-headers)
                        :body    (.stringify js/JSON payload)

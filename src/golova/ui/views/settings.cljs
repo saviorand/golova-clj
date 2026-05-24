@@ -32,28 +32,59 @@
         kind*   (r/atom (or (:backend-kind @app-state) :local))
         url*    (r/atom (or (:worker-url initial) ""))
         token*  (r/atom (or (:bearer-token initial) ""))
+        owner*  (r/atom (or (:owner initial) ""))
+        repo*   (r/atom (or (:repo  initial) ""))
         branch* (r/atom (or (:branch initial) "main"))
-        msg*    (r/atom nil)]
+        msg*    (r/atom nil)
+        ;; Repo dropdown state: nil = never loaded; vec = loaded; :loading
+        ;; = in flight. Stays in local form-2 state so it's not persisted.
+        repos*  (r/atom nil)
+        repos-err* (r/atom nil)
+        load-repos! (fn []
+                      (reset! repos* :loading)
+                      (reset! repos-err* nil)
+                      (-> (state/list-repos!)
+                          (.then  #(reset! repos* (vec %)))
+                          (.catch (fn [e]
+                                    (reset! repos* nil)
+                                    (reset! repos-err*
+                                            (or (.-message e) (str e)))))))]
     (fn []
       (let [sync-state (:sync-state @app-state)
             status     (or (:status sync-state) :idle)
+            cfg-now    {:worker-url   @url*
+                        :bearer-token @token*
+                        :owner        @owner*
+                        :repo         @repo*
+                        :branch       @branch*}
             saved?     (and (= @kind* (:backend-kind @app-state))
-                            (= {:worker-url   @url*
-                                :bearer-token @token*
-                                :branch       @branch*}
-                               (:sync-config @app-state)))
+                            (= cfg-now (:sync-config @app-state)))
             save!      (fn []
                          (storage/save-backend-kind! @kind*)
-                         (storage/save-sync-config! {:worker-url   @url*
-                                                     :bearer-token @token*
-                                                     :branch       @branch*})
+                         (storage/save-sync-config! cfg-now)
                          (swap! app-state assoc
                                 :backend-kind @kind*
-                                :sync-config  {:worker-url   @url*
-                                               :bearer-token @token*
-                                               :branch       @branch*})
+                                :sync-config  cfg-now)
                          (state/bind-sync-triggers!)
-                         (reset! msg* {:kind :ok :text "Saved."}))]
+                         (reset! msg* {:kind :ok :text "Saved."}))
+            repo-current   (when (and (not (str/blank? @owner*))
+                                      (not (str/blank? @repo*)))
+                             (str @owner* "/" @repo*))
+            on-repo-select (fn [v]
+                             (cond
+                               (str/blank? v)
+                               (do (reset! owner* "") (reset! repo* ""))
+
+                               :else
+                               (let [slash (str/index-of v "/")
+                                     o (subs v 0 slash)
+                                     n (subs v (inc slash))
+                                     match (some #(when (= v (:full-name %)) %)
+                                                 (when (vector? @repos*) @repos*))]
+                                 (reset! owner* o)
+                                 (reset! repo* n)
+                                 (when (and match (str/blank? @branch*))
+                                   (reset! branch* (or (:default-branch match) "main"))))))]
         [:div.settings-section
          [:h4 "Sync"]
 
@@ -90,8 +121,39 @@
                :on-change #(reset! token* (.. % -target -value))
                :placeholder "…"}]]
             [:div.settings-row
+             [:div.lbl "Repo"
+              [:div.hint
+               (cond
+                 @repos-err*       (str "Couldn't load repos: " @repos-err*)
+                 (= :loading @repos*) "Loading repos the worker's PAT can see…"
+                 (nil? @repos*)    "Click Load to fetch repos the worker's PAT can see. Leave blank to use the worker's default."
+                 (empty? @repos*)  "PAT returned no repos. Check its scope, or leave blank to use the worker default."
+                 :else             (str "Pick one of " (count @repos*) " repos. Leave blank to use the worker default."))]]
+             [:div.settings-controls
+              [:select.settings-input
+               {:value (or repo-current "")
+                :disabled (or (= :loading @repos*) (not (vector? @repos*)))
+                :on-change #(on-repo-select (.. % -target -value))}
+               [:option {:value ""} "(use worker default)"]
+               (when repo-current
+                 ;; Show the currently-set value even if it's not in the
+                 ;; freshly-loaded list (e.g. dropdown not loaded yet, or PAT
+                 ;; lost visibility).
+                 (when-not (some #(= repo-current (:full-name %))
+                                 (when (vector? @repos*) @repos*))
+                   [:option {:value repo-current}
+                    (str repo-current " (current)")]))
+               (for [r (when (vector? @repos*) @repos*)]
+                 ^{:key (:full-name r)}
+                 [:option {:value (:full-name r)}
+                  (str (:full-name r)
+                       (when (:private? r) " 🔒"))])]
+              [:button {:disabled (= :loading @repos*)
+                        :on-click load-repos!}
+               (if (vector? @repos*) "Refresh" "Load")]]]
+            [:div.settings-row
              [:div.lbl "Branch"
-              [:div.hint "Usually 'main'."]]
+              [:div.hint "Usually 'main'. Auto-fills from the selected repo's default branch if left blank."]]
              [:input.settings-input
               {:value @branch*
                :on-change #(reset! branch* (.. % -target -value))

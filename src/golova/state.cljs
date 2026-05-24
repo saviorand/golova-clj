@@ -173,5 +173,6 @@
 (def sync-push!             sync/sync-push!)
 (def sync!                  sync/sync!)
 (def pending-changes        sync/pending-changes)
+(def list-repos!            sync/list-repos!)
 (def bind-sync-triggers!    sync/bind-sync-triggers!)
 (def unbind-sync-triggers!  sync/unbind-sync-triggers!)
