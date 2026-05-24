@@ -14,7 +14,8 @@
             [cljs.pprint :as pprint]
             [cljs.reader :as reader]
             [golova.state.core :as core :refer [app-state]]
-            [golova.state.persist :as persist]))
+            [golova.state.persist :as persist]
+            [golova.storage :as storage]))
 
 ;; ===========================================================================
 ;; Pure: snapshot ↔ files
@@ -413,6 +414,19 @@
   (swap! app-state update :sync-state
          (fn [s] (assoc (or s {}) :status status :error-msg (or error-msg nil)))))
 
+(def ^:private persisted-sync-keys
+  [:last-pulled-head :last-pulled-files :last-pulled-at
+   :last-pushed-head :last-pushed-at :last-warnings])
+
+(defn ^:private update-and-persist-sync-state!
+  "Merge `m` into `:sync-state` and persist the durable fields to
+  localStorage. After-reload, push-then-pull needs :last-pulled-head and
+  :last-pulled-files to be available without a prior pull this session."
+  [m]
+  (swap! app-state update :sync-state (fn [s] (merge (or s {}) m)))
+  (storage/save-sync-meta!
+    (select-keys (:sync-state @app-state) persisted-sync-keys)))
+
 (defn ^:private parse-json [^js resp]
   (.then (.text resp) (fn [t] (try (js->clj (.parse js/JSON t) :keywordize-keys true)
                                    (catch :default _ {:raw t})))))
@@ -503,12 +517,11 @@
       ;; First-push case: don't clobber local state. Record the head sha so
       ;; the next push has a base, and stash an empty :last-pulled-files so
       ;; diff-files will include the entire current snapshot.
-      (do (swap! app-state update :sync-state
-                 (fn [s] (assoc (or s {})
-                                :last-pulled-head  head-sha
-                                :last-pulled-files {}
-                                :last-pulled-at    now
-                                :last-warnings     [])))
+      (do (update-and-persist-sync-state!
+            {:last-pulled-head  head-sha
+             :last-pulled-files {}
+             :last-pulled-at    now
+             :last-warnings     []})
           {:warnings [] :head-sha head-sha :first-push? true})
 
       :else
@@ -517,12 +530,11 @@
           (js/console.warn "sync: pulled files have warnings"
                            (clj->js warnings)))
         (persist/import-snapshot! snapshot)
-        (swap! app-state update :sync-state
-               (fn [s] (assoc (or s {})
-                              :last-pulled-head  head-sha
-                              :last-pulled-files files
-                              :last-pulled-at    now
-                              :last-warnings     (vec warnings))))
+        (update-and-persist-sync-state!
+          {:last-pulled-head  head-sha
+           :last-pulled-files files
+           :last-pulled-at    now
+           :last-warnings     (vec warnings)})
         {:warnings warnings :head-sha head-sha}))))
 
 (defn sync-pull!
@@ -578,13 +590,12 @@
 
                       :else
                       (let [now (.now js/Date)]
-                        (swap! app-state update :sync-state
-                               (fn [s] (assoc (or s {})
-                                              :last-pushed-head head-sha
-                                              :last-pushed-at   now
-                                              :last-pulled-head head-sha
-                                              :last-pulled-files files
-                                              :last-pulled-at   now)))
+                        (update-and-persist-sync-state!
+                          {:last-pushed-head head-sha
+                           :last-pushed-at   now
+                           :last-pulled-head head-sha
+                           :last-pulled-files files
+                           :last-pulled-at   now})
                         (set-status! :idle)
                         {:head-sha head-sha}))))
            (.catch (fn [^js e]
@@ -592,10 +603,19 @@
                      (throw e))))))))
 
 (defn sync!
-  "Pull then push. The Sync-button handler."
+  "Sync-button handler. Push-first when we have a base-sha to push against
+  (the common case after at least one prior pull, persisted via
+  `storage/sync-meta`). Falls back to pull-first only on the truly-first
+  sync of a new device, where there's no base-sha to push against.
+
+  Push-first preserves local edits in the single-active-device case: your
+  changes land on the remote BEFORE any potentially-destructive pull.
+  Concurrent-edit case (409) still falls into the existing LWW pull-clobber
+  in sync-push!."
   []
-  (-> (sync-pull!)
-      (.then (fn [_] (sync-push!)))))
+  (if (some? (:last-pulled-head (:sync-state @app-state)))
+    (-> (sync-push!) (.then (fn [_] (sync-pull!))))
+    (-> (sync-pull!) (.then (fn [_] (sync-push!))))))
 
 (defn pending-changes
   "How many files differ between the current local snapshot and the last

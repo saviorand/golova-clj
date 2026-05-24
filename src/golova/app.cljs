@@ -53,11 +53,13 @@
   (add-watch app-state :theme-sync (fn [_ _ old new] (when (not= (:theme old) (:theme new)) (sync-theme!))))
 
   ;; Hydrate from localStorage backend.
-  (let [backend (storage/local)]
+  (let [backend (storage/local)
+        sync-meta (storage/load-sync-meta)]
     (swap! app-state assoc
            :device-id     (storage/ensure-device-id!)
            :backend-kind  (storage/load-backend-kind)
-           :sync-config   (storage/load-sync-config))
+           :sync-config   (storage/load-sync-config)
+           :sync-state    (merge {:status :idle} sync-meta))
     (state/load-or-seed! backend))
   (state/rebuild!)
 

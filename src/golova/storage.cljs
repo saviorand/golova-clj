@@ -21,6 +21,7 @@
 (def ^:private device-key       "golova.device-id")
 (def ^:private backend-kind-key "golova.backend-kind")
 (def ^:private sync-config-key  "golova.sync-config")
+(def ^:private sync-meta-key    "golova.sync-meta.v1")
 
 (defrecord LocalStorage []
   Backend
@@ -72,6 +73,18 @@
 
 (defn save-sync-config! [cfg]
   (.setItem js/localStorage sync-config-key (pr-str cfg)))
+
+(defn load-sync-meta
+  "Read the persisted sync metadata (last-pulled-head, last-pulled-files,
+  last-pushed-head, timestamps) — or nil if never set. Carries the
+  knowledge needed to push-first across reloads."
+  []
+  (when-let [raw (.getItem js/localStorage sync-meta-key)]
+    (try (reader/read-string raw)
+         (catch :default _ nil))))
+
+(defn save-sync-meta! [m]
+  (.setItem js/localStorage sync-meta-key (pr-str m)))
 
 ;; ---------------------------------------------------------------------------
 ;; Export / import — for moving the log between devices manually until Drive
