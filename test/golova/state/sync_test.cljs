@@ -398,3 +398,91 @@
             line        (str/split text #"\n")]
       (is (= line (str/trimr line))
           (str "trailing whitespace in " path ": " (pr-str line))))))
+
+;; ---------------------------------------------------------------------------
+;; Hand-edit / agent bulk-import: bare triples and partial maps in events.edn
+;;
+;; To make git-based bulk edits ergonomic, the importer accepts events
+;; written as bare triples or partial maps. The first client pull-then-push
+;; absorbs them and re-emits as full event maps. See sync.cljs/normalize-event.
+
+(defn ^:private files-with-events
+  "Helper: take sample-snap's files map and overwrite the people events.edn
+  with a hand-edited text containing whatever mixed-shape events you want."
+  [events-text]
+  (-> (sync/snapshot->files sample-snap)
+      (assoc "domains/people/events.edn" events-text)))
+
+(deftest bare-triples-are-asserted-with-defaults
+  (testing "[e a v] expands to {:op :assert :triple [e a v] :at 0 :source \"hand\"}"
+    (let [files (files-with-events "[[:zoe :in-domain :people]\n [:zoe :parent :alice]]")
+          {:keys [snapshot warnings]} (sync/files->snapshot files)
+          new-events (filter #(= :zoe (-> % :triple first)) (:events snapshot))]
+      (is (empty? warnings))
+      (is (= 2 (count new-events)))
+      (is (every? #(= :assert (:op %)) new-events))
+      (is (every? #(= 0 (:at %)) new-events))
+      (is (every? #(= "hand" (:source %)) new-events))
+      (is (every? :id new-events) "deterministic :id auto-filled"))))
+
+(deftest partial-event-maps-get-defaults-filled
+  (testing "missing :op defaults to :assert; missing :source defaults to \"hand\""
+    (let [files (files-with-events "[{:triple [:zoe :parent :alice]}]")
+          {:keys [snapshot]} (sync/files->snapshot files)
+          ev (first (filter #(= :zoe (-> % :triple first)) (:events snapshot)))]
+      (is (= :assert (:op ev)))
+      (is (= 0 (:at ev)))
+      (is (= "hand" (:source ev)))))
+  (testing "partial maps preserve explicit fields the user provided"
+    (let [files (files-with-events "[{:op :retract :triple [:alice :note \"old\"] :source \"agent\"}]")
+          {:keys [snapshot]} (sync/files->snapshot files)
+          ev (first (filter #(= :retract (:op %)) (:events snapshot)))]
+      (is (= "agent" (:source ev))
+          "user-provided :source wins over the default")
+      (is (= [:alice :note "old"] (:triple ev))))))
+
+(deftest mixed-shapes-coexist-in-events-edn
+  (testing "full maps, partial maps, and bare triples can mix in one file"
+    (let [files (files-with-events
+                  (str "[{:id \"keep-me\" :op :assert :triple [:zoe :in-domain :people]"
+                       "  :at 100 :source \"seed\"}\n"
+                       " [:zoe :parent :alice]\n"
+                       " {:triple [:zoe :parent :bob]}]"))
+          {:keys [snapshot]} (sync/files->snapshot files)
+          zoe-events (filter #(= :zoe (-> % :triple first)) (:events snapshot))]
+      (is (= 3 (count zoe-events)))
+      (is (some #(= "keep-me" (:id %)) zoe-events)
+          "full event's :id preserved verbatim"))))
+
+(deftest bare-triple-ids-are-deterministic
+  (testing "the same bare triple → same :id across imports (so re-importing is idempotent)"
+    (let [files (files-with-events "[[:zoe :parent :alice]]")
+          {snap1 :snapshot} (sync/files->snapshot files)
+          {snap2 :snapshot} (sync/files->snapshot files)
+          ev1 (first (filter #(= :zoe (-> % :triple first)) (:events snap1)))
+          ev2 (first (filter #(= :zoe (-> % :triple first)) (:events snap2)))]
+      (is (= (:id ev1) (:id ev2))))))
+
+(deftest bulk-import-round-trip-normalises-to-full-maps
+  (testing "after one pull-then-push cycle, bare triples become full event maps"
+    (let [authored-text "[[:zoe :in-domain :people]\n [:zoe :parent :alice]]"
+          existing      (sync/snapshot->files sample-snap)
+          ;; Simulate the agent's bulk-import commit by replacing the file.
+          after-agent   (assoc existing "domains/people/events.edn" authored-text)
+          ;; First client pulls → in-memory snapshot has normalized events.
+          {snap :snapshot} (sync/files->snapshot after-agent)
+          ;; First client pushes → re-emits the file in canonical form.
+          after-client  (sync/snapshot->files snap)
+          new-text      (get after-client "domains/people/events.edn")]
+      (is (re-find #":op :assert" new-text)
+          "normalized events.edn carries :op :assert (full map form)")
+      (is (re-find #":source \"hand\"" new-text)
+          "normalized events.edn carries the default :source")
+      (is (not (re-find #"\[:zoe :in-domain :people\]\n" new-text))
+          "bare-triple line is gone; the triple lives inside an event map now")
+      ;; A second round-trip is byte-stable — proves no churn after first absorb.
+      (let [{snap2 :snapshot} (sync/files->snapshot after-client)
+            after-client-2    (sync/snapshot->files snap2)]
+        (is (= (get after-client  "domains/people/events.edn")
+               (get after-client-2 "domains/people/events.edn"))
+            "second round-trip is byte-identical")))))

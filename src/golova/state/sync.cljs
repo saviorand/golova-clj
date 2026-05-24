@@ -29,7 +29,13 @@
 ;;   domains/<id>/predicates.edn               ; vec of {:name :argTypes}
 ;;   domains/<id>/queries.edn                  ; vec of {:name :text :pinned?}
 ;;   domains/<id>/rules.edn                    ; vec of bare clauses
-;;   domains/<id>/events.edn                   ; vec of {:id :op :triple :at :source :device}
+;;   domains/<id>/events.edn                   ; vec of events; each event is one of:
+;;                                             ;   {:id :op :triple :at :source :device}  ; canonical (client-emitted)
+;;                                             ;   {:triple [e a v] :op? :at? :source?}   ; partial map (hand-edited)
+;;                                             ;   [e a v]                                ; bare triple (hand-edited)
+;;                                             ; See `normalize-event` for defaults; an agent committing facts
+;;                                             ; via git can use bare triples — the first client pull-then-push
+;;                                             ; absorbs them into canonical form.
 
 ;; ---------------------------------------------------------------------------
 ;; Pretty-print helpers
@@ -279,6 +285,29 @@
 (defn ^:private fill-event-id [evt]
   (if (:id evt) evt (assoc evt :id (deterministic-event-id evt))))
 
+(defn ^:private normalize-event
+  "Authoring shortcut for hand-edited / agent-written events.edn.
+
+  Accepts either form:
+    - a bare triple        [e a v]        → {:op :assert :triple [e a v]
+                                              :at 0 :source \"hand\"}
+    - a partial event map  {:triple …}    → defaults applied for missing
+                                              :op (:assert), :at (0),
+                                              :source (\"hand\")
+
+  Full event maps (op+triple+at+source) pass through with their key order
+  intact — so round-tripping a fully-normalised events.edn produces byte-
+  identical output. Used by the importer so an agent committing facts via
+  git doesn't have to author full event records by hand."
+  [e]
+  (cond
+    (vector? e) {:op :assert :triple e :at 0 :source "hand"}
+    (map? e)    (cond-> e
+                  (nil? (:op     e)) (assoc :op     :assert)
+                  (nil? (:at     e)) (assoc :at     0)
+                  (nil? (:source e)) (assoc :source "hand"))
+    :else       e))
+
 (defn ^:private fill-rule-id [rule]
   (cond
     (and (map? rule) (:id rule)) rule
@@ -351,9 +380,11 @@
           user-events   (->> dom-ids
                              (mapcat (fn [d]
                                        (->> (get-in @by-dom [d :events] [])
+                                            (map normalize-event)
                                             (map fill-event-id))))
                              vec)
-          all-events    (vec (concat dom-meta-evts user-events orphan-events))
+          orphan-evs    (mapv (comp fill-event-id normalize-event) orphan-events)
+          all-events    (vec (concat dom-meta-evts user-events orphan-evs))
           rules         (vec (mapcat
                                (fn [d]
                                  (let [clauses (or (get-in @by-dom [d :rules]) [])]
