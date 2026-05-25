@@ -30,7 +30,8 @@
             [golova.state.query :as query]
             [golova.state.csv :as csv]
             [golova.state.convert :as convert]
-            [golova.state.sync :as sync]))
+            [golova.state.sync :as sync]
+            [golova.state.sources :as sources]))
 
 ;; ---------------------------------------------------------------------------
 ;; core
@@ -70,6 +71,7 @@
 (def declared-types-in      domain/declared-types-in)
 (def declared-predicates-in domain/declared-predicates-in)
 (def queries-in             domain/queries-in)
+(def sources-in             domain/sources-in)
 (def rules-in               domain/rules-in)
 (def create-domain!         domain/create-domain!)
 (def delete-domain!         domain/delete-domain!)
@@ -174,5 +176,13 @@
 (def sync!                  sync/sync!)
 (def pending-changes        sync/pending-changes)
 (def list-repos!            sync/list-repos!)
+
+;; ---------------------------------------------------------------------------
+;; sources (external producers — golova.state.sources)
+
+(def refresh-source!      sources/refresh-source!)
+(def refresh-all-sources! sources/refresh-all-sources!)
+(def declare-source!      sources/declare-source!)
+(def delete-source!       sources/delete-source!)
 (def bind-sync-triggers!    sync/bind-sync-triggers!)
 (def unbind-sync-triggers!  sync/unbind-sync-triggers!)

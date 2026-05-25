@@ -79,7 +79,8 @@
                    disc-pred (filter (complement :declared?) preds)
                    rules (domain-rules id)
                    types (state/declared-types-in id)
-                   queries (state/queries-in id)]]
+                   queries (state/queries-in id)
+                   sources (state/sources-in id)]]
         ^{:key (str "d-" (name id))}
         [:div.domain-block {:class (when (pos? depth) (str "subdomain depth-" depth))
                             :style (when (pos? depth)
@@ -198,6 +199,23 @@
                     :on-click #(do (state/switch-domain! id)
                                    (state/select! {:kind :query
                                                    :name (:name q)
+                                                   :domain id}))}]))
+              (sub {:label "Sources" :items sources
+                    :expanded? (sub-exp? id :sources)
+                    :on-toggle #(state/toggle-subsection! id :sources)})
+              (when (sub-exp? id :sources)
+                (for [s sources]
+                  ^{:key (str "s-" (:name s))}
+                  [nav-item
+                   {:active? (and active-domain?
+                                  (= :source (:kind selection))
+                                  (= (:name s) (:name selection)))
+                    :icon "↺"
+                    :icon-tooltip (str (clojure.core/name (:kind s)) " source")
+                    :label (:name s)
+                    :on-click #(do (state/switch-domain! id)
+                                   (state/select! {:kind :source
+                                                   :name (:name s)
                                                    :domain id}))}]))
               (when (seq notes)
                 [:<>

@@ -15,7 +15,7 @@
     :db-schema nil
     :events []
     :rules []
-    :schema {:types [] :predicates [] :queries []}
+    :schema {:types [] :predicates [] :queries [] :sources []}
     :rejections []
     :build-error nil
     ;; UI state

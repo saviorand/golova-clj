@@ -137,8 +137,15 @@
            :build-error err
            :error err)))
 
-(defn append-events! [evts]
-  (swap! app-state update :events (fnil into []) evts)
-  (rebuild!))
+(defn append-events!
+  "Append `evts` to the event log and trigger a rebuild. Events whose `:id`
+  is already in the log are silently dropped — this makes deterministic-id
+  producers (e.g. source refresh) idempotent on re-run."
+  [evts]
+  (let [existing (set (map :id (:events @app-state)))
+        new-evts (vec (remove #(contains? existing (:id %)) evts))]
+    (when (seq new-evts)
+      (swap! app-state update :events (fnil into []) new-evts)
+      (rebuild!))))
 
 (defn append-event! [evt] (append-events! [evt]))

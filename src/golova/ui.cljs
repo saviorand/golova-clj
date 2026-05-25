@@ -31,6 +31,7 @@
             [golova.ui.views.type :refer [type-view]]
             [golova.ui.views.rule :refer [rule-view]]
             [golova.ui.views.query :refer [query-view]]
+            [golova.ui.views.source :refer [source-view]]
             [golova.ui.views.entity :refer [entity-view]]
             [golova.ui.views.domain :refer [domain-view]]
             [golova.ui.views.settings :refer [settings-view]]))
@@ -46,6 +47,7 @@
       :predicate [predicate-view (:name sel) (:arity sel)]
       :rule      [rule-view (:name sel)]
       :query     [query-view (:name sel)]
+      :source    [source-view (:name sel)]
       :entity    [entity-view (:name sel)]
       :domain    [domain-view (or (:domain sel) (:current-domain s))]
       :settings  [settings-view]

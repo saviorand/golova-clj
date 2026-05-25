@@ -96,7 +96,8 @@
      :events (into (into domain-events in-domain-events) user-events)
      :schema {:types merged-types
               :predicates merged-preds
-              :queries merged-queries}}))
+              :queries merged-queries
+              :sources []}}))
 
 ;; ---------------------------------------------------------------------------
 ;; First-run starter snapshot
@@ -160,7 +161,9 @@
          :home (merge {:onboarding-collapsed? true} (:home snap))
          :rules (vec (or (:rules snap) []))
          :events (vec (or (:events snap) []))
-         :schema (or (:schema snap) {:types [] :predicates [] :queries []})))
+         :schema (let [s (or (:schema snap) {:types [] :predicates [] :queries []})]
+                   ;; back-compat: snapshots saved before :sources existed.
+                   (update s :sources #(or % [])))))
 
 (defn load-or-seed! [backend]
   (let [snap (storage/-load backend)]
@@ -191,7 +194,7 @@
   (swap! app-state assoc
          :db nil :db-schema nil
          :events [] :rules []
-         :schema {:types [] :predicates [] :queries []}
+         :schema {:types [] :predicates [] :queries [] :sources []}
          :rejections [] :build-error nil
          :current-domain nil
          :selection {:kind :home}

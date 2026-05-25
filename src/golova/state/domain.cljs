@@ -78,6 +78,11 @@
   [domain-id]
   (filter #(= domain-id (:domain %)) (get-in @app-state [:schema :queries])))
 
+(defn sources-in
+  "External-source declarations filed under domain `domain-id`."
+  [domain-id]
+  (filter #(= domain-id (:domain %)) (get-in @app-state [:schema :sources])))
+
 (defn rules-in
   "Rules filed under domain `domain-id`."
   [domain-id]

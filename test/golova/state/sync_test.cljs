@@ -56,7 +56,8 @@
                           {:name "recommended-by" :argTypes ["atom" "atom"]
                            :domain :books}]
             :queries     [{:name "ancestors" :text "(ancestor ?a ?d)"
-                           :domain :people :pinned? true}]}})
+                           :domain :people :pinned? true}]
+            :sources     []}})
 
 ;; ---------------------------------------------------------------------------
 ;; snapshot->files: shape checks

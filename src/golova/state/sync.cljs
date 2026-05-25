@@ -28,6 +28,7 @@
 ;;   domains/<id>/types.edn                    ; vec of {:name :constructors}
 ;;   domains/<id>/predicates.edn               ; vec of {:name :argTypes}
 ;;   domains/<id>/queries.edn                  ; vec of {:name :text :pinned?}
+;;   domains/<id>/sources.edn                  ; vec of {:name :kind :url? :path? :array-at? :mapping}
 ;;   domains/<id>/rules.edn                    ; vec of bare clauses
 ;;   domains/<id>/events.edn                   ; vec of events; each event is one of:
 ;;                                             ;   {:id :op :triple :at :source :device}  ; canonical (client-emitted)
@@ -221,6 +222,13 @@
        (sort-by :name)
        vec))
 
+(defn ^:private domain-sources [snap dom-id]
+  (->> (get-in snap [:schema :sources])
+       (filter #(= dom-id (:domain %)))
+       (map #(dissoc % :domain))
+       (sort-by :name)
+       vec))
+
 (defn snapshot->files
   "Pure: v2 snapshot → {path → EDN-string} for the entire repo.
 
@@ -240,7 +248,8 @@
         decl-doms    (set (concat (map :domain (:rules snap))
                                   (map :domain (get-in snap [:schema :types]))
                                   (map :domain (get-in snap [:schema :predicates]))
-                                  (map :domain (get-in snap [:schema :queries]))))
+                                  (map :domain (get-in snap [:schema :queries]))
+                                  (map :domain (get-in snap [:schema :sources]))))
         cur-dom      (some-> snap :current-domain vector set)
         all-doms     (vec (sort (set (concat (keys dom-entities)
                                              (remove nil? decl-doms)
@@ -268,6 +277,8 @@
                (edn-str (domain-typed snap dom-id :predicates)))
         (swap! files assoc (str base "queries.edn")
                (edn-str (domain-queries snap dom-id)))
+        (swap! files assoc (str base "sources.edn")
+               (edn-str (domain-sources snap dom-id)))
         (swap! files assoc (str base "events.edn") (edn-str dom-evs))))
     @files))
 
@@ -321,12 +332,12 @@
     (keyword (second m))))
 
 (defn ^:private file-kind
-  "rules.edn / types.edn / predicates.edn / queries.edn / domain.edn / events.edn"
+  "rules.edn / types.edn / predicates.edn / queries.edn / sources.edn / domain.edn / events.edn"
   [path]
   (let [base (last (str/split path #"/"))]
     (some #(when (= base %) (keyword (str/replace % #"\.edn$" "")))
           ["rules.edn" "types.edn" "predicates.edn"
-           "queries.edn" "domain.edn" "events.edn"])))
+           "queries.edn" "sources.edn" "domain.edn" "events.edn"])))
 
 (defn ^:private synth-domain-events
   "Given a domain.edn map, produce the :domain-label and :domain-parent
@@ -407,13 +418,19 @@
                                (fn [d]
                                  (map #(assoc % :domain d)
                                       (or (get-in @by-dom [d :queries]) [])))
+                               dom-ids))
+          sources       (vec (mapcat
+                               (fn [d]
+                                 (map #(assoc % :domain d)
+                                      (or (get-in @by-dom [d :sources]) [])))
                                dom-ids))]
       {:snapshot (merge fields
                         {:rules  rules
                          :events all-events
                          :schema {:types      types
                                   :predicates preds
-                                  :queries    queries}})
+                                  :queries    queries
+                                  :sources    sources}})
        :warnings @warnings})))
 
 (defn files->snapshot
