@@ -16,6 +16,9 @@
 
 (defn- sync-theme! []
   (let [cl (.. js/document -documentElement -classList)]
+    ;; ConfigProvider scopes antd CSS variables to .golova (the cssVar key);
+    ;; mirror it on <html> so global stylesheet rules can use the same vars.
+    (.add cl "golova")
     (if (= :dark (:theme @app-state))
       (.add cl "dark")
       (.remove cl "dark"))))
@@ -46,7 +49,9 @@
 (defn- antd-provider []
   (let [dark? (= :dark (:theme @app-state))]
     [:> ConfigProvider
-     {:theme    {:algorithm (if dark?
+     {:theme    {:cssVar {:key "golova"}
+                 :hashed false
+                 :algorithm (if dark?
                               (.-darkAlgorithm theme)
                               (.-defaultAlgorithm theme))
                  :token     {:borderRadius 6
