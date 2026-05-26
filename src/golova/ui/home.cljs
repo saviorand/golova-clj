@@ -1,58 +1,59 @@
 (ns golova.ui.home
-  "Home view: Quick add + Recent activity (side-by-side), Pinned queries,
-  Getting started (glossary, collapsible), Domains grid."
+  "Home view: Quick add + Recent activity, Pinned queries, Getting started,
+  Domains grid — all using antd Cards, Descriptions, List, and Statistic."
   (:require [clojure.string :as str]
             [cljs.reader :as reader]
             [reagent.core :as r]
+            ["@ant-design/icons" :as icons]
             [golova.state :as state :refer [app-state]]
             [golova.ui.common :refer [atom-link pred-link fmt-relative]]
-            [golova.ui.typed :refer [constructor-type-map type-value]]))
+            [golova.ui.typed :refer [constructor-type-map type-value]]
+            [golova.ui.antd :as antd]))
 
 ;; ---------------------------------------------------------------------------
 ;; Glossary (onboarding)
 
+(defn- glossary-items []
+  [{:title "Atom"
+    :description [:span "A named thing — " [:code "alice"] ", " [:code "sf"] ", "
+                  [:code "dune"] ". Stored as a Datahike "
+                  [:code ":db/ident"] " so you can refer to it by keyword."]}
+   {:title "Predicate"
+    :description [:span "An attribute (relation), like " [:code ":parent"] " or "
+                  [:code ":lives-in"] ". "
+                  [:b "▦ declared"] " = you set up the arg types; "
+                  [:b "▢ discovered"] " = inferred from data."]}
+   {:title "Rule"
+    :description [:span "A Datalog inference clause, like "
+                  [:code "[(ancestor ?a ?d) [?a :parent ?d]]"]
+                  ". Rules run to fixed-point at every rebuild."]}
+   {:title "Fact provenance"
+    :description [:span
+                  [:> (.-Tag antd/antd) {:color "green"} "event"]
+                  " — asserted via UI or import. "
+                  [:> (.-Tag antd/antd) {:color "purple"} "derived"]
+                  " — produced by a rule. "
+                  [:> (.-Tag antd/antd) {:color "orange"} "imported"]
+                  " — pulled from another domain."]}
+   {:title "Domain"
+    :description "A UI/organisational group. Domains are first-class atoms with members and optional parents."}
+   {:title "Notes"
+    :description [:span "Any entity can have a markdown note. Use "
+                  [:code "[[wikilink]]"] " syntax to link atoms."]}])
+
 (defn- glossary []
-  [:div.glossary
-   [:div.gloss-item
-    [:span.term "Atom"]
-    [:span.def "A named thing — alice, sf, dune. Stored as a Datahike "
-     [:code ":db/ident"] " so you can refer to it by keyword anywhere."]]
-   [:div.gloss-item
-    [:span.term "Predicate"]
-    [:span.def "An attribute (a relation), like " [:code ":parent"] " or "
-     [:code ":lives-in"] ". Each predicate is one Datahike schema entry. "
-     [:b "▦ declared"] " = you set up the arg types; "
-     [:b "▢ discovered"] " = the app inferred it from your data."]]
-   [:div.gloss-item
-    [:span.term "Rule"]
-    [:span.def "A Datalog inference clause, like "
-     [:code "[(ancestor ?a ?d) [?a :parent ?d]]"]
-     ". Rules are run to fixed-point at every rebuild — their outputs "
-     "are stored as real facts so queries don't need special syntax."]]
-   [:div.gloss-item
-    [:span.term "Fact provenance"]
-    [:span.def
-     [:span.pill.prov-event "event"] " — you asserted this via the UI or import. "
-     [:span.pill.prov-derived "derived"] " — a rule produced this from other facts. "
-     [:span.pill.prov-imported "imported"] " — pulled from another domain."]]
-   [:div.gloss-item
-    [:span.term "Domain"]
-    [:span.def "A UI/organisational group. Domains are first-class atoms — "
-     "each one's a navigable entity with members (via :in-domain) and an "
-     "optional parent (via :domain-parent). Predicates and rules are global; "
-     "the :domain field on each declaration controls sidebar placement only."]]
-   [:div.gloss-item
-    [:span.term "Notes"]
-    [:span.def "Any entity can have a markdown note. Use "
-     [:code "[[wikilink]]"] " syntax inside a note to link to another atom."]]])
+  [:div.glossary {:style {:marginBottom 16}}
+   (for [{:keys [title description]} (glossary-items)]
+     ^{:key title}
+     [:> (.-ListItem antd/antd)
+      [:> (.-ListItemMeta antd/antd)
+       {:title title
+        :description (r/as-element description)}]])])
 
 ;; ---------------------------------------------------------------------------
 ;; Quick add scratch
 
-(defn- parse-scratch-input
-  "Read a textarea blob as `[ … ]` of EDN forms. Returns
-  {:triples [...] :err nil} or {:triples [] :err msg}."
-  [text]
+(defn- parse-scratch-input [text]
   (try
     (let [parsed (when-not (str/blank? text)
                    (reader/read-string (str "[" text "]")))
@@ -67,10 +68,7 @@
     (catch :default e
       {:triples [] :err (or (.-message e) (str e))})))
 
-(defn quick-scratch
-  "Compact form for asserting one or more triples into a chosen domain.
-  Each line of the textarea is an EDN triple `[:s :p :v]`. ⌘↵ or Add commits."
-  []
+(defn quick-scratch []
   (let [text  (r/atom "")
         msg   (r/atom nil)
         dom   (r/atom nil)]
@@ -104,40 +102,52 @@
                                                  (-> my-rejs first :message))})
                              (reset! msg
                                      {:kind :ok
-                                      :text (str "added " (count triples)
+                                      :text (str "Added " (count triples)
                                                  " fact"
                                                  (when (not= 1 (count triples)) "s")
                                                  (when err (str " · " err)))}))))))]
-        [:div.quick-scratch
-         [:div.qs-head
-          [:span.qs-label "Quick add to"]
-          [:select.qs-domain
+        [:div.quick-add-card
+         [:div.quick-add-header
+          [:span.quick-add-label "Add to"]
+          [:> (.-Select antd/antd)
            {:value (or (some-> target name) "")
-            :disabled (empty? domains)
-            :on-change #(reset! dom (keyword (.. % -target -value)))}
-           (for [{:keys [id label]} domains]
-             ^{:key id} [:option {:value (name id)} label])]
-          [:span.qs-hint "one triple per line: "
+                :disabled (empty? domains)
+                :size "small"
+                :style #js {:width 140}
+                :onChange #(reset! dom (keyword %))
+                :options (clj->js
+                          (for [{:keys [id label]} domains]
+                            {:value (name id) :label label})
+                          :keyword-fn name)}]
+          [:span.quick-add-hint
+           "one triple per line: "
            [:code "[:alice :parent :bob]"]]]
-         [:textarea.qs-input
+         [:> (.-InputTextArea antd/antd)
           {:value @text
-           :rows 3
-           :placeholder "[:alice :likes :coffee]\n[:alice :age 30]"
-           :spellCheck "false"
-           :on-change #(do (reset! text (.. % -target -value))
-                           (reset! msg nil))
-           :on-key-down (fn [e]
-                          (when (and (= "Enter" (.-key e))
-                                     (or (.-metaKey e) (.-ctrlKey e)))
-                            (.preventDefault e)
-                            (commit)))}]
-         [:div.qs-foot
+               :rows 3
+               :placeholder "[:alice :likes :coffee]\n[:alice :age 30]"
+               :spellCheck "false"
+               :onChange #(do (reset! text (.. % -target -value))
+                              (reset! msg nil))
+               :onKeyDown (fn [e]
+                            (when (and (= "Enter" (.-key e))
+                                       (or (.-metaKey e) (.-ctrlKey e)))
+                              (.preventDefault e)
+                              (commit)))}]
+         [:div.quick-add-footer
           (when @msg
-            [:span.qs-status {:class (name (:kind @msg))} (:text @msg)])
-          [:span.qs-kbd [:kbd "⌘↵"]]
-          [:button.primary.small
-           {:disabled (str/blank? @text)
-            :on-click commit}
+            [:> (.-Alert antd/antd)
+             {:type (if (= :err (:kind @msg)) "error" "success")
+                  :message (:text @msg)
+                  :banner true
+                  :showIcon false
+                  :style #js {:flex 1}}])
+          [:span.quick-add-kbd [:kbd "⌘↵"]]
+          [:> (.-Button antd/antd)
+           {:type "primary"
+                :size "small"
+                :disabled (str/blank? @text)
+                :onClick commit}
            "Add"]]]))))
 
 ;; ---------------------------------------------------------------------------
@@ -149,36 +159,49 @@
         result (when q (state/run-query (:text q)))
         d-label (some-> (state/domain-info domain-id) :label)
         cap 5]
-    [:div.pinned-card
-     [:div.pq-head
-      [:a.pq-name {:on-click #(do (some-> domain-id state/switch-domain!)
-                                  (state/select! {:kind :query :name name}))}
-       name]
-      (when d-label [:span.pq-dom d-label])
-      (when-not (:error result)
-        [:span.pq-count
-         (count (:rows result)) " result"
-         (when (not= 1 (count (:rows result))) "s")])]
+    [:> (.-Card antd/antd)
+     {:size "small"
+          :hoverable true
+          :style #js {:marginBottom 12}
+          :title (r/as-element
+                  [:span
+                   [:a {:on-click #(do (some-> domain-id state/switch-domain!)
+                                       (state/select! {:kind :query :name name}))
+                        :style {:cursor "pointer"}}
+                    name]
+                   (when d-label
+                     [:> (.-Tag antd/antd)
+                      {:style #js {:marginLeft 8}} d-label])])
+          :extra (r/as-element
+                  (when-not (:error result)
+                    [:> (.-Badge antd/antd)
+                     {:count (count (:rows result))
+                          :showZero true
+                          :overflowCount 999
+                          :style #js {:backgroundColor "var(--ant-color-primary)"}}]))}
      (cond
        (:error result)
-       [:div.pq-error (str "error: " (:error result))]
+       [:> (.-Alert antd/antd)
+        {:type "error" :message (str "Error: " (:error result))}]
 
        (empty? (:rows result))
-       [:div.pq-empty "no solutions"]
+       [:> (.-Empty antd/antd)
+        {:description "No solutions"
+         :image (.-PRESENTED_IMAGE_SIMPLE (.-Empty antd/antd))}]
 
        :else
        (let [ctor-map (constructor-type-map)
              shown (take cap (:rows result))]
-         [:div.pq-rows
+         [:div.pinned-results
           (for [[i row] (map-indexed vector shown)]
             ^{:key i}
-            [:div.pq-row
+            [:div.pinned-row
              (for [[k v] (map vector (:vars result) row)]
                ^{:key k}
-               [:span.pq-bind
-                [:span.pq-k k] " " [type-value ctor-map v]])])
+               [:span.pinned-bind
+                [:span.pinned-var k] " " [type-value ctor-map v]])])
           (when (> (count (:rows result)) cap)
-            [:div.pq-more
+            [:a.pinned-more
              {:on-click #(do (some-> domain-id state/switch-domain!)
                              (state/select! {:kind :query :name name}))}
              "+ " (- (count (:rows result)) cap) " more"])]))]))
@@ -186,10 +209,12 @@
 (defn pinned-queries-section []
   (let [pins (state/pinned-queries)]
     (if (empty? pins)
-      [:div.empty-state
-       "No pinned queries yet. Open a saved query and click "
-       [:b "Pin to Home"] " to surface its results here."]
-      [:div.pinned-list
+      [:> (.-Empty antd/antd)
+       {:description (r/as-element
+                      [:span "No pinned queries. Open a saved query and click "
+                       [:b "Pin to Home"] "."])
+        :image (.-PRESENTED_IMAGE_SIMPLE (.-Empty antd/antd))}]
+      [:div.pinned-grid
        (doall
         (for [{:keys [domain-id name] :as p} pins]
           ^{:key (str (clojure.core/name domain-id) "/" name)}
@@ -202,107 +227,160 @@
   (let [events (state/recent-events 15)
         domains (state/domains-list)
         ctor-map (constructor-type-map)]
-    [:div.activity-feed
-     (cond
-       (empty? domains)
-       [:div.empty-state "Create a domain to start logging activity."]
-
-       (empty? events)
-       [:div.empty-state "No activity yet. Use the scratch above to add a fact."]
-
-       :else
-       (doall
-        (for [{:keys [id at op triple source]} events
-              :let [[e a v] triple
-                    dom (when (keyword? e) (state/entity-domain e))
-                    dom-label (some-> dom state/domain-info :label)]]
-          ^{:key id}
-          [:div.activity-row {:class (str "op-" (name op))}
-           [:span.act-when {:title (.toLocaleString (js/Date. at))}
-            (fmt-relative at)]
-           (when dom-label
-             [:span.act-dom {:on-click #(state/switch-domain! dom)}
-              dom-label])
-           [:span.act-op (case op :assert "+" :retract "−" (name op))]
-           [:span.act-triple
-            [:span.act-sub (atom-link e)]
-            " " [pred-link a] " "
-            [:span.act-obj [type-value ctor-map v]]]
-           (when source
-             [:span.act-src {:title (str "source: " source)} source])])))]))
+    (if (or (empty? domains) (empty? events))
+      [:> (.-Empty antd/antd)
+       {:description (if (empty? domains)
+                       "Create a domain to start logging activity."
+                       "No activity yet. Use the scratch above to add a fact.")
+        :image (.-PRESENTED_IMAGE_SIMPLE (.-Empty antd/antd))}]
+      [:> (.-List antd/antd)
+       {:dataSource (clj->js (mapv (fn [{:keys [id at op triple source]}]
+                                         (let [[e a v] triple
+                                               dom (when (keyword? e)
+                                                     (state/entity-domain e))
+                                               dom-label (some-> dom
+                                                                 state/domain-info
+                                                                 :label)]
+                                           #js {:id id
+                                                :at at
+                                                :op op
+                                                :e e :a a :v v
+                                                :dom dom
+                                                :domLabel dom-label
+                                                :source source}))
+                                       events))
+            :renderItem (fn [item]
+                          (r/as-element
+                           [:> (.-ListItem antd/antd)
+                            {:style #js {:padding "8px 0"}}
+                            [:div.activity-row
+                             [:span.act-when {:title (.toLocaleString (js/Date. (.-at item)))}
+                              (fmt-relative (.-at item))]
+                             (when (.-domLabel item)
+                               [:> (.-Tag antd/antd)
+                                {:color "blue"
+                                     :style #js {:cursor "pointer"}
+                                     :onClick #(state/switch-domain! (.-dom item))}
+                                (.-domLabel item)])
+                             [:> (.-Tag antd/antd)
+                              {:color (if (= "assert" (name (.-op item)))
+                                            "success" "error")}
+                              (if (= "assert" (name (.-op item))) "+" "−")]
+                             [:span.act-triple
+                              [:span.act-sub [atom-link (.-e item)]]
+                              " " [pred-link (.-a item)] " "
+                              [:span.act-obj [type-value ctor-map (.-v item)]]]
+                             (when (.-source item)
+                               [:span.act-src {:title (str "source: " (.-source item))}
+                                (.-source item)])]]))
+            :size "small"
+            :split true}])))
 
 ;; ---------------------------------------------------------------------------
 ;; Top-level home view
 
 (defn home-view []
   (let [s @app-state
-        collapsed? (get-in s [:home :onboarding-collapsed?])]
-    [:div.view.home
+        collapsed? (get-in s [:home :onboarding-collapsed?])
+        domains (state/domains-list)]
+    [:div.view.home-view
+     ;; Hero section
      [:div.home-hero
       [:div.home-logo
        [:span.logo-big "G"]]
-      [:div
-       [:h1 "Golova"]
-       [:p.tagline "A small, no-server PKM built on Datahike. "
-        "Triples, rules, derivations — your knowledge as a graph."]]]
+      [:div.home-hero-text
+       [:> (.-TypographyTitle antd/antd) {:level 2 :style #js {:marginBottom 4}}
+        "Golova"]
+       [:> (.-TypographyText antd/antd)
+        {:type "secondary"}
+        "A small, no-server PKM built on Datahike. Triples, rules, derivations — your knowledge as a graph."]]]
 
+     ;; Quick add + Activity (side by side)
      [:div.home-grid
-      [:div.section-card
-       [:div.section-card-head
-        [:h3 "Quick add"]]
-       [:div.section-card-body
-        [quick-scratch]]]
+      [:> (.-Card antd/antd)
+       {:title (r/as-element [:span [:> (.-ThunderboltOutlined icons) " "] "Quick Add"])
+            :size "small"
+            :style #js {:height "100%"}}
+       [quick-scratch]]
 
-      [:div.section-card
-       [:div.section-card-head
-        [:h3 "Recent activity"]]
-       [:div.section-card-body
-        [activity-feed]]]]
+      [:> (.-Card antd/antd)
+       {:title (r/as-element [:span [:> (.-RetweetOutlined icons) " "] "Recent Activity"])
+            :size "small"
+            :style #js {:height "100%"}
+            :styles #js {:body #js {:maxHeight 340 :overflowY "auto"}}}
+       [activity-feed]]]
 
-     [:div.section-card
-      [:div.section-card-head
-       [:h3 "Pinned queries"]]
-      [:div.section-card-body
-       [pinned-queries-section]]]
+     ;; Pinned queries
+     [:> (.-Card antd/antd)
+      {:title (r/as-element [:span [:> (.-StarOutlined icons) " "] "Pinned Queries"])
+           :size "small"
+           :style #js {:marginBottom 20}}
+      [pinned-queries-section]]
 
-     [:div.section-card
-      [:div.section-card-head
-       [:h3 "Getting started"]
-       [:button.ghost.small
-        {:on-click #(state/toggle-onboarding!)}
-        (if collapsed? "show" "hide")]]
+     ;; Getting started (collapsible)
+     [:> (.-Card antd/antd)
+      {:title (r/as-element [:span [:> (.-InfoCircleOutlined icons) " "] "Getting Started"])
+           :size "small"
+           :style #js {:marginBottom 20}
+           :extra (r/as-element
+                   [:> (.-Button antd/antd)
+                    {:type "text" :size "small"
+                         :onClick #(state/toggle-onboarding!)}
+                    (if collapsed? "Show" "Hide")])}
       (when-not collapsed?
-        [:div.section-card-body
+        [:div.getting-started
          [:p "Golova represents your knowledge as " [:b "triples"] ": "
           [:code "[subject attribute value]"] ". The starter domain has "
           [:code "[alice :parent bob]"] " etc. — type facts in the predicate "
           "tables or via Cmd-K, define inference rules, and ask queries."]
          [glossary]
-         [:p.hint "Quick keys: " [:kbd "⌘K"] " palette, "
-          [:kbd "⌘↵"] " save rules, " [:kbd "Esc"] " close popovers."]])]
+         [:div.shortcut-hints
+          [:> (.-Space antd/antd) {:size "middle"}
+           [:span [:kbd "⌘K"] " Palette"]
+           [:span [:kbd "⌘↵"] " Save rules"]
+           [:span [:kbd "Esc"] " Close"]]]])]
 
-     [:div.section-card
-      [:div.section-card-head
-       [:h3 "Domains"]
-       [:button.primary.small
-        {:on-click #(state/open-modal! {:kind :new-domain})}
-        "+ New"]]
-      [:div.section-card-body
-       [:div.domains-grid
-        (doall
-         (for [{:keys [id label]} (state/domains-list)]
-           (let [n-facts (count (state/triples-in-domain id))
-                 n-preds (count (state/declared-predicates-in id))
-                 n-rules (count (state/rules-in id))]
-             ^{:key id}
-             [:div.domain-card
-              {:on-click #(state/switch-domain! id)}
-              [:div.dc-name label]
-              [:div.dc-meta
-               [:span n-facts " facts"]
-               [:span n-preds " preds"]
-               [:span n-rules " rules"]]])))
-        [:div.domain-card.new
-         {:on-click #(state/open-modal! {:kind :new-domain})}
-         [:div.dc-name "+ New domain"]
-         [:div.dc-meta "Empty"]]]]]]))
+     ;; Domains grid
+     [:> (.-Card antd/antd)
+      {:title (r/as-element [:span [:> (.-FolderOutlined icons) " "] "Domains"])
+           :size "small"
+           :extra (r/as-element
+                   [:> (.-Button antd/antd)
+                    {:type "primary" :size "small"
+                         :icon (r/as-element [:> (.-PlusOutlined icons)])
+                         :onClick #(state/open-modal! {:kind :new-domain})}
+                    "New Domain"])}
+      [:div.domains-grid
+       (doall
+        (for [{:keys [id label]} domains]
+          (let [n-facts (count (state/triples-in-domain id))
+                n-preds (count (state/declared-predicates-in id))
+                n-rules (count (state/rules-in id))]
+            ^{:key id}
+            [:> (.-Card antd/antd)
+             {:size "small"
+                  :hoverable true
+                  :style #js {:marginBottom 12}
+                  :onClick #(state/switch-domain! id)
+                  :styles #js {:body #js {:padding "12px 16px"}}}
+             [:div.domain-card-inner
+              [:div.domain-card-name label]
+              [:div.domain-card-stats
+               [:> (.-Statistic antd/antd)
+                {:title "facts" :value n-facts :styles #js {:content #js {:fontSize 16}}}]
+               [:> (.-Statistic antd/antd)
+                {:title "preds" :value n-preds :styles #js {:content #js {:fontSize 16}}}]
+               [:> (.-Statistic antd/antd)
+                {:title "rules" :value n-rules :styles #js {:content #js {:fontSize 16}}}]]]])))
+       ;; New domain card
+       [:> (.-Card antd/antd)
+        {:size "small"
+             :hoverable true
+             :style #js {:marginBottom 12 :borderStyle "dashed"}
+             :onClick #(state/open-modal! {:kind :new-domain})
+             :styles #js {:body #js {:padding "12px 16px"
+                                     :textAlign "center"}}}
+        [:div.domain-card-inner
+         [:div.domain-card-name {:style {:color "var(--ant-color-text-secondary)"}}
+          "+ New domain"]
+         [:div {:style {:color "var(--ant-color-text-tertiary)"}} "Empty"]]]]]]))

@@ -3,6 +3,8 @@
   applies theme to the <html> element, and rebuilds the engine."
   (:require [reagent.core :as r]
             [reagent.dom.client :as rdom]
+            ["antd" :refer [ConfigProvider theme]]
+            ["antd/locale/en_US" :default locale]
             [golova.state :as state :refer [app-state]]
             [golova.state.sync :as sync]
             [golova.storage :as storage]
@@ -39,18 +41,36 @@
            (:modal   @app-state) (state/close-modal!)))))))
 
 ;; ---------------------------------------------------------------------------
+;; Antd ConfigProvider wrapper
+
+(defn- antd-provider []
+  (let [dark? (= :dark (:theme @app-state))]
+    [:> ConfigProvider
+     {:theme    {:algorithm (if dark?
+                              (.-darkAlgorithm theme)
+                              (.-defaultAlgorithm theme))
+                 :token     {:borderRadius 6
+                             :fontFamily "-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'Helvetica Neue', system-ui, sans-serif"}}
+      :locale   locale
+      :componentSize "middle"}
+     [ui/root]]))
+
+;; ---------------------------------------------------------------------------
 ;; Boot
 
 (defonce ^:private root-atom (atom nil))
 
 (defn render! []
   (when-let [root @root-atom]
-    (rdom/render root [ui/root])))
+    (rdom/render root [antd-provider])))
 
 (defn init []
   (sync-theme!)
   ;; Persist theme on change.
-  (add-watch app-state :theme-sync (fn [_ _ old new] (when (not= (:theme old) (:theme new)) (sync-theme!))))
+  (add-watch app-state :theme-sync (fn [_ _ old new]
+                                      (when (not= (:theme old) (:theme new))
+                                        (sync-theme!)
+                                        (render!))))
 
   ;; Hydrate from localStorage backend.
   (let [backend (storage/local)

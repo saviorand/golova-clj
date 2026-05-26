@@ -1,15 +1,14 @@
 (ns golova.ui.palette
-  "Command palette (⌘K). Fuzzy-search candidate list: commands, domains,
-  types, predicates, rules, queries, and entities — current-domain content
-  surfaces first."
+  "Command palette (⌘K). Uses antd Modal + Input for a polished
+  search experience. Fuzzy-searches commands, domains, types,
+  predicates, rules, queries, and entities."
   (:require [clojure.string :as str]
             [golova.state :as state :refer [app-state]]
             [golova.ui.common :refer [fmt-val]]
-            [golova.ui.derivations :refer [domain-predicates domain-rules]]))
+            [golova.ui.derivations :refer [domain-predicates domain-rules]]
+            [golova.ui.antd :as antd]))
 
-(defn- domain-entities
-  "Set of keyword entities in a domain — atoms + declared type constructors."
-  [domain-id]
+(defn- domain-entities [domain-id]
   (let [in-store (set (state/atoms-in-domain domain-id))
         ctors (->> (state/declared-types-in domain-id)
                    (mapcat (fn [t] (map keyword (:constructors t))))
@@ -66,9 +65,7 @@
           {:kind :entity :label (fmt-val e) :sublabel "entity" :icon "◇"
            :run (nav {:kind :entity :name e})}))))))
 
-(defn- match-score
-  "Positive score for matching candidates, nil to drop. Prefix beats substring."
-  [q label]
+(defn- match-score [q label]
   (let [lab (str/lower-case label)
         q   (str/lower-case (str/trim q))]
     (cond
@@ -96,39 +93,46 @@
             n (count cands)
             idx (if (pos? n) (mod (max 0 (or (:index p) 0)) n) 0)
             chosen (when (pos? n) (nth cands idx))]
-        [:div.palette-overlay
-         {:on-click (fn [e]
-                      (when (= (.-target e) (.-currentTarget e))
-                        (state/close-palette!)))}
-         [:div.palette-card
+        [:> (.-Modal antd/antd)
+         {:open true
+              :closable false
+              :footer nil
+              :width 620
+              :style #js {:top "10vh"}
+              :styles #js {:body #js {:padding 0 :maxHeight "70vh" :overflowY "auto"}}
+              :onCancel state/close-palette!}
+         [:div.palette-inner
           [:div.palette-search
            [:span.k "⌘K"]
-           [:input.palette-input
+           [:> (.-Input antd/antd)
             {:placeholder "Search or jump anywhere — type a name, predicate, rule…"
-             :auto-focus true
-             :value (:query p)
-             :on-change #(state/set-palette-query! (.. % -target -value))
-             :on-key-down (fn [e]
-                            (cond
-                              (= "Escape" (.-key e))
-                              (state/close-palette!)
-                              (= "ArrowDown" (.-key e))
-                              (do (.preventDefault e) (state/palette-move! 1))
-                              (= "ArrowUp" (.-key e))
-                              (do (.preventDefault e) (state/palette-move! -1))
-                              (= "Enter" (.-key e))
-                              (when chosen
-                                (.preventDefault e)
-                                ((:run chosen)))))}]
+                 :autoFocus true
+                 :value (:query p)
+                 :variant "borderless"
+                 :size "large"
+                 :onChange #(state/set-palette-query! (.. % -target -value))
+                 :onKeyDown (fn [e]
+                              (cond
+                                (= "Escape" (.-key e))
+                                (state/close-palette!)
+                                (= "ArrowDown" (.-key e))
+                                (do (.preventDefault e) (state/palette-move! 1))
+                                (= "ArrowUp" (.-key e))
+                                (do (.preventDefault e) (state/palette-move! -1))
+                                (= "Enter" (.-key e))
+                                (when chosen
+                                  (.preventDefault e)
+                                  ((:run chosen)))))}]
            [:span.count (str n " result" (when (not= 1 n) "s"))]]
           (if (zero? n)
             [:div.palette-empty "No matches. Try a different query."]
             [:div.palette-list
              (for [[i c] (map-indexed vector cands)]
                ^{:key i}
-               [:div.palette-item {:class (when (= i idx) "active")
-                                    :on-click #((:run c))
-                                    :on-mouse-enter #(state/palette-set-index! i)}
+               [:div.palette-item
+                {:class (when (= i idx) "active")
+                 :on-click #((:run c))
+                 :on-mouse-enter #(state/palette-set-index! i)}
                 [:span.icon (:icon c)]
                 [:span.lbl (:label c)]
                 (when (:sublabel c) [:span.sub (:sublabel c)])])])

@@ -1,24 +1,6 @@
 (ns golova.ui
-  "Root layout + selection→view dispatch. Everything else lives in
-  golova.ui.* sub-namespaces:
-
-    common.cljs       — fmt-val, atom-link, pred-link, markdown, fmt-relative
-    table.cljs        — table-toolbar, sort-key, sort-indicator, cycle-sort
-    typed.cljs        — type-value, chip-editor, typed-input, ctor-map
-    derivations.cljs  — domain-predicates/rules, rule-clause, rules-using/defining
-    popover.cljs      — popover state + view, move-to-pill
-    sidebar.cljs      — left-rail domain tree
-    topbar.cljs       — Datalog query bar
-    home.cljs         — quick-scratch, pinned queries, activity feed, glossary
-    palette.cljs      — ⌘K command palette
-    modal.cljs        — every modal form + dispatch
-
-    views/rules.cljs      — \"Rules / facts\" overview
-    views/predicate.cljs  — predicate facts page
-    views/type.cljs       — type editor
-    views/rule.cljs       — single-rule page
-    views/query.cljs      — saved query page
-    views/entity.cljs     — entity (atom) page"
+  "Root layout + selection→view dispatch. Uses antd Layout for the
+  overall page structure with a collapsible Sider and main Content area."
   (:require [golova.state :as state :refer [app-state]]
             [golova.ui.sidebar :refer [sidebar]]
             [golova.ui.topbar :refer [topbar]]
@@ -34,7 +16,8 @@
             [golova.ui.views.source :refer [source-view]]
             [golova.ui.views.entity :refer [entity-view]]
             [golova.ui.views.domain :refer [domain-view]]
-            [golova.ui.views.settings :refer [settings-view]]))
+            [golova.ui.views.settings :refer [settings-view]]
+            [golova.ui.antd :as antd]))
 
 (defn main
   "Choose the main view based on (:selection app-state)."
@@ -58,13 +41,15 @@
 (defn root []
   (let [mobile-open? (:sidebar-mobile-open? @app-state)]
     [:<>
-     [sidebar]
-     (when mobile-open?
-       [:div.sidebar-overlay
-        {:on-click #(state/close-sidebar-mobile!)}])
-     [:main
-      [topbar]
-      [main]]
+     [:div.app-layout
+      (when mobile-open?
+        [:div.sidebar-mobile-overlay
+         {:on-click #(state/close-sidebar-mobile!)}])
+      [sidebar]
+      [:div.main-wrapper
+       [topbar]
+       [:div.main-content
+        [main]]]]
      [modal]
      [popover]
      [palette]]))

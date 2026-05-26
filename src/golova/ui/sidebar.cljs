@@ -54,7 +54,7 @@
       [{:key    (str "rules:" (name domain-id))
         :icon   (r/as-element [antd/CodeOutlined])
         :label  "Rules / facts"
-        :class  (when (active? :rules) "ant-menu-item-selected-custom")
+        :className (when (active? :rules) "ant-menu-item-selected-custom")
         :onClick #(do (state/switch-domain! domain-id)
                       (state/select! {:kind :rules :domain domain-id}))}]
 
@@ -66,9 +66,10 @@
           :children
           (for [t types]
             {:key   (str "type:" (name domain-id) ":" (:name t))
-             :label [:span.nav-label
-                     [:span (:name t)]
-                     [:span.nav-count (count (:constructors t))]]
+             :label (r/as-element
+                     [:span.nav-label
+                      [:span (:name t)]
+                      [:span.nav-count (count (:constructors t))]])
              :onClick #(do (state/switch-domain! domain-id)
                            (state/select! {:kind :type
                                            :name (:name t)
@@ -82,11 +83,12 @@
           :children
           (for [p all-preds]
             {:key   (str "pred:" (name domain-id) ":" (:name p) "/" (:arity p))
-             :label [:span.nav-label
-                     [:span
-                      (if (:declared? p) "▦ " "▢ ")
-                      (:name p) "/" (:arity p)]
-                     [:span.nav-count (count (:facts p))]]
+             :label (r/as-element
+                     [:span.nav-label
+                      [:span
+                       (if (:declared? p) "▦ " "▢ ")
+                       (:name p) "/" (:arity p)]
+                      [:span.nav-count (count (:facts p))]])
              :onClick #(do (state/switch-domain! domain-id)
                            (state/select! {:kind :predicate
                                            :name (:name p)
@@ -101,10 +103,11 @@
           :children
           (for [r rules]
             {:key   (str "rule:" (name domain-id) ":" (:name r) "/" (:arity r))
-             :label [:span.nav-label
-                     [:span "ƒ " (:name r) "/" (:arity r)]
-                     (when (> (count (:clauses r)) 1)
-                       [:span.nav-count (count (:clauses r))])]
+             :label (r/as-element
+                     [:span.nav-label
+                      [:span "ƒ " (:name r) "/" (:arity r)]
+                      (when (> (count (:clauses r)) 1)
+                        [:span.nav-count (count (:clauses r))])])
              :onClick #(do (state/switch-domain! domain-id)
                            (state/select! {:kind :rule
                                            :name (:name r)
@@ -118,7 +121,8 @@
           :children
           (for [q queries]
             {:key   (str "query:" (name domain-id) ":" (:name q))
-             :label [:span.nav-label [:span "? " (:name q)]]
+             :label (r/as-element
+                     [:span.nav-label [:span "? " (:name q)]])
              :onClick #(do (state/switch-domain! domain-id)
                            (state/select! {:kind :query
                                            :name (:name q)
@@ -132,8 +136,9 @@
           :children
           (for [s sources]
             {:key   (str "source:" (name domain-id) ":" (:name s))
-             :label [:span.nav-label
-                     [:span "↺ " (:name s)]]
+             :label (r/as-element
+                     [:span.nav-label
+                      [:span "↺ " (:name s)]])
              :onClick #(do (state/switch-domain! domain-id)
                            (state/select! {:kind :source
                                            :name (:name s)
@@ -147,11 +152,12 @@
           :children
           (for [n notes]
             {:key   (str "note:" (name domain-id) ":" (name n))
-             :label [:span.nav-label [:span "✎ " (fmt-val n)]]
+             :label (r/as-element
+                     [:span.nav-label [:span "✎ " (fmt-val n)]])
              :onClick #(do (state/switch-domain! domain-id)
                            (state/select! {:kind :entity
                                            :name n
-                                           :domain domain-id}))})}]))))
+                                           :domain domain-id}))})}])))))
 
 (defn- domain-tree-order
   "DFS through domains-list, yielding [domain depth] pairs."
@@ -181,14 +187,15 @@
             :let [exp? (contains? (or (:expanded state) #{}) id)]]
         {:key      (str "domain:" (name id))
          :icon     (r/as-element [antd/FolderOutlined])
-         :label    [:span.domain-label
-                    [:span label]
-                    [:span.domain-menu-btn
-                     {:on-click (fn [e]
-                                  (.stopPropagation e)
-                                  (open-popover-from-event!
-                                   {:kind :domain-menu :domain id} e))}
-                     "⋯"]]
+         :label    (r/as-element
+                    [:span.domain-label
+                     [:span label]
+                     [:span.domain-menu-btn
+                      {:on-click (fn [e]
+                                   (.stopPropagation e)
+                                   (open-popover-from-event!
+                                    {:kind :domain-menu :domain id} e))}
+                      "⋯"]])
          :children (domain-menu-items id state)})
 
       ;; Divider + settings
@@ -212,13 +219,9 @@
 
 
 (defn sidebar []
-  [:aside.sidebar "DEBUG: minimal sidebar"])
-
-(defn sidebar-old []
   (let [{:keys [selection sidebar-mobile-open?]} @app-state
         state @app-state
         items (build-menu-items state)
-        ;; Find the selected key based on current selection
         selected-key (case (:kind selection)
                        :home "home"
                        :settings "settings"
@@ -246,11 +249,19 @@
     [:aside.app-sidebar
      {:class (when sidebar-mobile-open? "mobile-open")}
      [sidebar-header]
-     [:div.sidebar-nav "DEBUG: menu omitted"]
+     [:div.sidebar-nav
+      [:> (.-Menu antd/antd)
+       {:mode         "inline"
+        :theme        (if (= :dark (:theme state)) "dark" "light")
+        :selectedKeys #js [selected-key]
+        :defaultOpenKeys #js [(str "domain:" (name (or (:current-domain state) "")))]
+        :items        (clj->js items :keyword-fn name)
+        :style        #js {:borderRight "none"
+                           :background "transparent"}}]]
      [:div.sidebar-footer
       [:div.footer-shortcut
        [:span "Palette"]
        [:kbd "⌘K"]]
       [:div.footer-shortcut
        [:span "Rebuild"]
-       [:kbd "⌘↵"]]]])))
+       [:kbd "⌘↵"]]]]))

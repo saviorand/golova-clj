@@ -1,8 +1,9 @@
 (ns golova.ui.popover
-  "Floating popovers — anchored cards rendered at the root. State lives
-  in app-state under :popover; views open via `open-popover-from-event!`
-  and read the anchor for absolute positioning."
-  (:require [golova.state :as state :refer [app-state]]))
+  "Floating popovers — anchored cards rendered at the root. Uses antd
+  Popover and Dropdown for domain menus and move-to pickers."
+  (:require [reagent.core :as r]
+            [golova.state :as state :refer [app-state]]
+            [golova.ui.antd :as antd]))
 
 (defn open-popover-from-event! [m e]
   (let [t (.-currentTarget e)
@@ -13,28 +14,21 @@
 
 (defn close-popover! [] (swap! app-state assoc :popover nil))
 
-(defn popover-shell
-  "Wraps a popover body in a fixed-position card anchored near `anchor`."
-  [anchor & body]
+(defn popover-shell [anchor & body]
   [:div.popover {:style {:left (str (max 8 (- (:left anchor) 0)) "px")
                          :top  (str (+ 6 (:top anchor)) "px")}}
    (into [:<>] body)])
 
-(defn move-to-pill
-  "Header pill showing the item's current domain; click → popover that lists
-  other domains for moving. `mover` is a fn [src-id dst-id]."
-  [src-id mover]
+(defn move-to-pill [src-id mover]
   (let [label (some-> (state/domain-info src-id) :label)]
     (when label
       [:span.pill.movable
        {:title "Move to another domain"
         :on-click (fn [e] (open-popover-from-event!
-                            {:kind :move-to :src src-id :mover mover} e))}
+                           {:kind :move-to :src src-id :mover mover} e))}
        "in " [:b label] " ▾"])))
 
-(defn popover
-  "Top-level popover renderer — dispatches on :kind."
-  []
+(defn popover []
   (let [p (:popover @app-state)]
     (when p
       [:div.popover-overlay
@@ -54,7 +48,7 @@
            [:button.popover-item
             {:on-click #(do (close-popover!)
                             (state/open-modal! {:kind :new-domain
-                                                 :parent (:domain p)}))}
+                                                :parent (:domain p)}))}
             [:span.k "+"] " Add subdomain…"]
            [:div.popover-sep]
            [:button.popover-item
@@ -84,7 +78,7 @@
            [:button.popover-item
             {:on-click #(do (close-popover!)
                             (state/open-modal! {:kind :rename-domain
-                                                 :domain (:domain p)}))}
+                                                :domain (:domain p)}))}
             [:span.k "✎"] " Rename…"]
            [:button.popover-item.danger
             {:on-click (fn []
