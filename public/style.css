@@ -658,7 +658,24 @@ body {
 /* Facts table */
 table.facts {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
+}
+
+/* Clip long string cells (e.g. markdown notes) to ~3 lines with ellipsis.
+   Hover/click into the entity view to see the full text. */
+table.facts tbody td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+table.facts tbody td .type-value.type-string {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-height: 4.5em;
+  white-space: pre-wrap;
 }
 
 table.facts thead th {
