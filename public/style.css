@@ -499,8 +499,10 @@ body {
 
 .pinned-bind {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 4px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .pinned-var {
@@ -663,12 +665,12 @@ table.facts {
 }
 
 /* Clip long string cells (e.g. markdown notes) to ~3 lines with ellipsis.
-   Hover/click into the entity view to see the full text. */
+   Click into the entity view to see the full text. */
 table.facts tbody td {
   overflow-wrap: anywhere;
   word-break: break-word;
 }
-table.facts tbody td .type-value.type-string {
+.type-value.type-string {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   line-clamp: 3;
@@ -676,6 +678,8 @@ table.facts tbody td .type-value.type-string {
   overflow: hidden;
   max-height: 4.5em;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 table.facts thead th {

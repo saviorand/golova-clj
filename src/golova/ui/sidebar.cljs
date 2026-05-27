@@ -159,46 +159,41 @@
                                            :name n
                                            :domain domain-id}))})}])))))
 
-(defn- domain-tree-order
-  "DFS through domains-list, yielding [domain depth] pairs."
-  [domains]
-  (let [by-parent (group-by :parent domains)]
-    (letfn [(walk [d depth]
-              (cons [d depth]
-                    (mapcat #(walk % (inc depth))
-                            (sort-by :label (get by-parent (:id d) [])))))]
-      (mapcat #(walk % 0) (sort-by :label (get by-parent nil []))))))
+(defn- domain-menu-item
+  "Build an antd Menu item for one domain. Subdomains nest under the same
+  parent as the domain's own rules/types/preds/etc., so a single click
+  expands both the domain's children-of-substance and its sub-domains."
+  [{:keys [id label]} by-parent state]
+  (let [own  (domain-menu-items id state)
+        kids (mapv #(domain-menu-item % by-parent state)
+                   (sort-by :label (get by-parent id [])))]
+    {:key   (str "domain:" (name id))
+     :icon  (r/as-element [antd/FolderOutlined])
+     :label (r/as-element
+             [:span.domain-label
+              [:span label]
+              [:span.domain-menu-btn
+               {:on-click (fn [e]
+                            (.stopPropagation e)
+                            (open-popover-from-event!
+                             {:kind :domain-menu :domain id} e))}
+               "⋯"]])
+     :children (vec (concat own kids))}))
 
 (defn- build-menu-items
-  "Build the complete antd Menu items array."
+  "Build the complete antd Menu items array. Sub-domains nest as children
+  of their parent's menu node."
   [state]
-  (let [domains (state/domains-list)
-        tree    (domain-tree-order domains)]
+  (let [domains   (state/domains-list)
+        by-parent (group-by :parent domains)
+        roots     (sort-by :label (get by-parent nil []))]
     (vec
      (concat
-      ;; Home
       [{:key  "home"
         :icon (r/as-element [antd/HomeOutlined])
         :label "Home"
         :onClick #(state/go-home!)}]
-
-      ;; Domain groups
-      (for [[{:keys [id label]} depth] tree
-            :let [exp? (contains? (or (:expanded state) #{}) id)]]
-        {:key      (str "domain:" (name id))
-         :icon     (r/as-element [antd/FolderOutlined])
-         :label    (r/as-element
-                    [:span.domain-label
-                     [:span label]
-                     [:span.domain-menu-btn
-                      {:on-click (fn [e]
-                                   (.stopPropagation e)
-                                   (open-popover-from-event!
-                                    {:kind :domain-menu :domain id} e))}
-                      "⋯"]])
-         :children (domain-menu-items id state)})
-
-      ;; Divider + settings
+      (mapv #(domain-menu-item % by-parent state) roots)
       [{:type "divider"}
        {:key  "settings"
         :icon (r/as-element [antd/SettingOutlined])

@@ -41,19 +41,27 @@
 (defn entity-mentions [entity]
   (filterv (fn [[e _ v]] (or (= e entity) (= v entity))) (all-triples)))
 
-(defn entity-note [entity]
-  (let [db (:db @app-state)]
-    (some-> db (d/datoms :eavt entity :note) first :v)))
-
-(defn entity-domain
-  "Return the :in-domain of an atom (its primary domain), or nil."
+(defn entity-note
+  "The :note on an entity, or nil. Safe when `entity` isn't a known
+  :db/ident (broken wikilinks land us here)."
   [entity]
   (let [db (:db @app-state)]
-    (when db
-      (let [eid (some-> (d/datoms db :avet :db/ident entity) first :e)
-            dom-eid (some-> db (d/datoms :eavt eid :in-domain) first :v)]
-        (when dom-eid
-          (some-> db (d/datoms :eavt dom-eid :db/ident) first :v))))))
+    (when (and db (keyword? entity))
+      (let [eid (some-> (d/datoms db :avet :db/ident entity) first :e)]
+        (when eid
+          (some-> db (d/datoms :eavt eid :note) first :v))))))
+
+(defn entity-domain
+  "Return the :in-domain of an atom (its primary domain), or nil. Safe
+  when `entity` isn't a known :db/ident."
+  [entity]
+  (let [db (:db @app-state)]
+    (when (and db (keyword? entity))
+      (let [eid (some-> (d/datoms db :avet :db/ident entity) first :e)]
+        (when eid
+          (let [dom-eid (some-> db (d/datoms :eavt eid :in-domain) first :v)]
+            (when dom-eid
+              (some-> db (d/datoms :eavt dom-eid :db/ident) first :v))))))))
 
 (defn all-atom-idents []
   (let [db (:db @app-state)]
