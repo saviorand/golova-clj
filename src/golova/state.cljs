@@ -31,7 +31,8 @@
             [golova.state.csv :as csv]
             [golova.state.convert :as convert]
             [golova.state.sync :as sync]
-            [golova.state.sources :as sources]))
+            [golova.state.sources :as sources]
+            [golova.state.inference :as inference]))
 
 ;; ---------------------------------------------------------------------------
 ;; core
@@ -176,6 +177,15 @@
 (def sync!                  sync/sync!)
 (def pending-changes        sync/pending-changes)
 (def list-repos!            sync/list-repos!)
+
+;; ---------------------------------------------------------------------------
+;; inference (scasp-clj integration — golova.state.inference)
+
+(def run-inference!          inference/run-inference!)
+(def run-induction!          inference/run-induction!)
+(def triples->scasp-facts    inference/triples->scasp-facts)
+(def current-db-as-facts     inference/current-db-as-facts)
+(def db-program              inference/db-program)
 
 ;; ---------------------------------------------------------------------------
 ;; sources (external producers — golova.state.sources)

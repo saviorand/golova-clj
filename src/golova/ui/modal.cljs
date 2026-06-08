@@ -6,6 +6,7 @@
             [reagent.core :as r]
             ["@ant-design/icons" :as icons]
             [golova.state :as state :refer [app-state]]
+            [golova.state.inference :as inference]
             [golova.storage :as storage]
             [golova.csv :as csv]
             [golova.ui.typed :refer [chip-editor]]
@@ -576,6 +577,97 @@
                                   (state/rename-domain! (:domain m) lbl))
                                 (state/close-modal!)))}
               "Rename"]]]]
+
+          :inference
+          (let [m-data  m
+                mode*   (r/atom :deduction)
+                query*  (r/atom "")
+                pred*   (r/atom "")
+                vars*   (r/atom "X")
+                running* (r/atom false)
+                result*  (r/atom nil)]
+            [:> (.-Modal antd/antd)
+             (merge (modal-props "Run Inference" 560)
+                    {:onCancel (fn [] (reset! result* nil) (state/close-modal!))})
+             [:> (.-Form antd/antd)
+              {:layout "vertical"}
+              [:> (.-TypographyParagraph antd/antd)
+               {:type "secondary"}
+               "Build a scasp-clj query over the current KB facts. "
+               "Results are stored as derived triples."]
+              [:> (.-FormItem antd/antd) {:label "Mode"}
+               [:> (.-RadioGroup antd/antd)
+                {:value @mode*
+                 :onChange #(reset! mode* (keyword (.. % -target -value)))
+                 :options #js [#js {:value "deduction" :label "Deduction"}
+                               #js {:value "abduction" :label "Abduction"}]}]]
+              [:> (.-FormItem antd/antd)
+               {:label "Query (scasp goal EDN)"
+                :extra "e.g. {:op :flies :args [\"X\"]}  or  a vector of goals"}
+               [:> (.-InputTextArea antd/antd)
+                {:rows 3
+                 :value @query*
+                 :spellCheck "false"
+                 :placeholder "{:op :flies :args [\"X\"]}"
+                 :onChange #(reset! query* (.. % -target -value))}]]
+              [:> (.-FormItem antd/antd)
+               {:label "Variable names (comma-separated)"
+                :extra "Variables to extract from results, e.g. X or X,Y"}
+               [:> (.-Input antd/antd)
+                {:value @vars*
+                 :placeholder "X"
+                 :onChange #(reset! vars* (.. % -target -value))}]]
+              [:> (.-FormItem antd/antd)
+               {:label "Store as predicate"
+                :extra "Keyword attr for derived triples (blank = infer from query op)"}
+               [:> (.-Input antd/antd)
+                {:value @pred*
+                 :placeholder "(inferred from query)"
+                 :onChange #(reset! pred* (.. % -target -value))}]]
+              (when @result*
+                (let [{:keys [stored-count triples error]} @result*]
+                  (if error
+                    [:> (.-Alert antd/antd)
+                     {:type "error" :showIcon true
+                      :message "Inference error"
+                      :description (str error)
+                      :style #js {:marginBottom 12}}]
+                    [:> (.-Alert antd/antd)
+                     {:type "success" :showIcon true
+                      :message (str stored-count " new triple"
+                                    (when (not= 1 stored-count) "s") " stored"
+                                    (when (pos? (count triples))
+                                      (str " (" (count triples) " derived total)")))
+                      :style #js {:marginBottom 12}}])))
+              [:div.modal-actions
+               [:> (.-Button antd/antd)
+                {:onClick (fn [] (reset! result* nil) (state/close-modal!))}
+                "Close"]
+               [:> (.-Button antd/antd)
+                {:type "primary"
+                 :loading @running*
+                 :disabled (str/blank? (str/trim @query*))
+                 :onClick
+                 (fn []
+                   (reset! result* nil)
+                   (reset! running* true)
+                   (try
+                     (let [q-edn  (reader/read-string (str/trim @query*))
+                           query  (if (vector? q-edn) q-edn [q-edn])
+                           vnames (mapv str/trim (str/split @vars* #","))
+                           pred   (let [p (str/trim @pred*)]
+                                    (when (seq p) (keyword p)))
+                           opts   (cond-> {:mode @mode*
+                                           :var-names (filterv seq vnames)}
+                                    pred (assoc :predicate pred)
+                                    (:domain m-data) (assoc :domain (:domain m-data)))
+                           r      (inference/run-inference! query opts)]
+                       (reset! result* r))
+                     (catch :default e
+                       (reset! result* {:error (or (.-message e) (str e))}))
+                     (finally
+                       (reset! running* false))))}
+                "Run"]]]])
 
           :settings
           [:> (.-Modal antd/antd)

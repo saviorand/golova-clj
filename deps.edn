@@ -1,4 +1,4 @@
-{:paths ["src"]
+{:paths ["src" "/Users/supernaturval/Documents/GitHub/scasp-clj/src"]
  :deps {org.clojure/clojure       {:mvn/version "1.12.4"}
         org.replikativ/datahike   {:mvn/version "0.8.1681"}
         reagent/reagent           {:mvn/version "1.2.0"}}

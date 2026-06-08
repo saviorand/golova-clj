@@ -26,7 +26,9 @@
      [{:kind :cmd :label "New domain…" :icon "+"
        :run (modal {:kind :new-domain})}
       {:kind :cmd :label "Open settings" :icon "⚙"
-       :run (modal {:kind :settings})}]
+       :run (modal {:kind :settings})}
+      {:kind :cmd :label "Run inference (scasp)…" :icon "⊢"
+       :run (modal {:kind :inference :domain cur-id})}]
      (when cur-id
        [{:kind :cmd :label (str "New type in " d-label "…") :icon "◆"
          :run (modal {:kind :new-type :domain cur-id})}
