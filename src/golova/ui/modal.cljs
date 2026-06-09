@@ -579,11 +579,12 @@
               "Rename"]]]]
 
           :inference
-          (let [m-data  m
-                mode*   (r/atom :deduction)
-                query*  (r/atom "")
-                pred*   (r/atom "")
-                vars*   (r/atom "X")
+          (let [m-data   m
+                mode*    (r/atom :deduction)
+                query*   (r/atom "")
+                pred*    (r/atom "")
+                vars*    (r/atom "X")
+                abds*    (r/atom "")
                 running* (r/atom false)
                 result*  (r/atom nil)]
             [:> (.-Modal antd/antd)
@@ -593,7 +594,7 @@
               {:layout "vertical"}
               [:> (.-TypographyParagraph antd/antd)
                {:type "secondary"}
-               "Build a scasp-clj query over the current KB facts. "
+               "Runs scasp-clj over the current domain's facts and rules. "
                "Results are stored as derived triples."]
               [:> (.-FormItem antd/antd) {:label "Mode"}
                [:> (.-RadioGroup antd/antd)
@@ -603,27 +604,35 @@
                                #js {:value "abduction" :label "Abduction"}]}]]
               [:> (.-FormItem antd/antd)
                {:label "Query (scasp goal EDN)"
-                :extra "e.g. {:op :flies :args [\"X\"]}  or  a vector of goals"}
+                :extra "e.g. {:op :can-fly :args [\"X\"]}  or a vector of goals"}
                [:> (.-InputTextArea antd/antd)
                 {:rows 3
                  :value @query*
                  :spellCheck "false"
-                 :placeholder "{:op :flies :args [\"X\"]}"
+                 :placeholder "{:op :can-fly :args [\"X\"]}"
                  :onChange #(reset! query* (.. % -target -value))}]]
               [:> (.-FormItem antd/antd)
                {:label "Variable names (comma-separated)"
-                :extra "Variables to extract from results, e.g. X or X,Y"}
+                :extra "Variables to extract, e.g. X  or  X,Y for arity-2 results"}
                [:> (.-Input antd/antd)
                 {:value @vars*
                  :placeholder "X"
                  :onChange #(reset! vars* (.. % -target -value))}]]
               [:> (.-FormItem antd/antd)
                {:label "Store as predicate"
-                :extra "Keyword attr for derived triples (blank = infer from query op)"}
+                :extra "Keyword for derived triples (blank = infer from query op)"}
                [:> (.-Input antd/antd)
                 {:value @pred*
                  :placeholder "(inferred from query)"
                  :onChange #(reset! pred* (.. % -target -value))}]]
+              (when (= :abduction @mode*)
+                [:> (.-FormItem antd/antd)
+                 {:label "Abducibles (comma-separated functor strings)"
+                  :extra "e.g. fly/1,walk/1 — predicates the solver may hypothesise"}
+                 [:> (.-Input antd/antd)
+                  {:value @abds*
+                   :placeholder "e.g. vuln/1,misconfigured/1"
+                   :onChange #(reset! abds* (.. % -target -value))}]])
               (when @result*
                 (let [{:keys [stored-count triples error]} @result*]
                   (if error
@@ -652,16 +661,22 @@
                    (reset! result* nil)
                    (reset! running* true)
                    (try
-                     (let [q-edn  (reader/read-string (str/trim @query*))
-                           query  (if (vector? q-edn) q-edn [q-edn])
-                           vnames (mapv str/trim (str/split @vars* #","))
-                           pred   (let [p (str/trim @pred*)]
-                                    (when (seq p) (keyword p)))
-                           opts   (cond-> {:mode @mode*
-                                           :var-names (filterv seq vnames)}
-                                    pred (assoc :predicate pred)
-                                    (:domain m-data) (assoc :domain (:domain m-data)))
-                           r      (inference/run-inference! query opts)]
+                     (let [q-edn    (reader/read-string (str/trim @query*))
+                           query    (if (vector? q-edn) q-edn [q-edn])
+                           vnames   (mapv str/trim (str/split @vars* #","))
+                           pred     (let [p (str/trim @pred*)]
+                                      (when (seq p) (keyword p)))
+                           abds     (when (= :abduction @mode*)
+                                      (->> (str/split @abds* #",")
+                                           (mapv str/trim)
+                                           (filterv seq)
+                                           set))
+                           opts     (cond-> {:mode       @mode*
+                                             :var-names  (filterv seq vnames)}
+                                      pred (assoc :predicate pred)
+                                      (seq abds) (assoc :abducibles abds)
+                                      (:domain m-data) (assoc :domain (:domain m-data)))
+                           r        (inference/run-inference! query opts)]
                        (reset! result* r))
                      (catch :default e
                        (reset! result* {:error (or (.-message e) (str e))}))

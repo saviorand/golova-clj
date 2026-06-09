@@ -1,0 +1,242 @@
+;; Golova inference demo — scasp-clj integration.
+;;
+;; Three domains, each designed to showcase a different inference mode
+;; available via the "Run inference (scasp)…" command palette entry (⌘K):
+;;
+;;   animals  — classic deductive inference over a type hierarchy.
+;;              Demonstrates NAF (negation-as-failure) with the
+;;              penguin-doesn't-fly exception.
+;;
+;;   trust    — deductive inference over a social graph (transitive trust,
+;;              delegation chains). Shows arity-2 result extraction.
+;;
+;;   risk     — abductive inference: given a conclusion (something bad
+;;              happened), find the minimal set of assumptions that explain it.
+;;
+;; ─── HOW TO USE ────────────────────────────────────────────────────────────
+;; 1. Settings → Import this file (replaces existing data).
+;; 2. Press ⌘K → "Run inference (scasp)…"
+;; 3. Paste one of the sample queries below into the query textarea.
+;; 4. Fill in Variable names and Predicate name as instructed.
+;; 5. Click Run. Derived facts appear in the domain's fact table with
+;;    source "derived".
+;;
+;; ─── SAMPLE QUERIES ────────────────────────────────────────────────────────
+;;
+;; ── ANIMALS domain (deduction) ─────────────────────────────────────────────
+;;
+;; Q1: Which animals can fly? (uses NAF — penguins can't)
+;;   Mode       : Deduction
+;;   Query EDN  : [{:op :can-fly :args ["X"]}]
+;;   Var names  : X
+;;   Predicate  : can-fly
+;;   → Stores: sparrow, robin, eagle can-fly true
+;;              (tweety is a penguin so won't appear)
+;;
+;; Q2: Which animals have warm blood?
+;;   Query EDN  : [{:op :warm-blooded :args ["X"]}]
+;;   Var names  : X
+;;   Predicate  : warm-blooded
+;;
+;; Q3: What can each bird eat? (arity-2 result)
+;;   Query EDN  : [{:op :eats :args ["X" "Y"]}]
+;;   Var names  : X Y
+;;   Predicate  : eats
+;;   → Stores pairs like [eagle eats fish]
+;;
+;; ── TRUST domain (deduction) ───────────────────────────────────────────────
+;; Switch to the Trust Network domain first.
+;;
+;; Q4: Who does alice transitively trust?
+;;   Query EDN  : [{:op :trusts :args [:alice "Y"]}]
+;;   Var names  : Y
+;;   Predicate  : alice-trusts
+;;   → Stores [alice alice-trusts bob], [alice alice-trusts carol], etc.
+;;
+;; Q5: Who can delegate (is trusted by an admin and has admin role)?
+;;   Query EDN  : [{:op :can-delegate :args ["X" "Y"]}]
+;;   Var names  : X Y
+;;   Predicate  : can-delegate
+;;
+;; ── RISK domain (deduction) ────────────────────────────────────────────────
+;; Switch to the Risk Analysis domain first (click it in the sidebar).
+;;
+;; Q6: What is high risk?
+;;   Mode       : Deduction
+;;   Query EDN  : [{:op :high-risk :args ["X"]}]
+;;   Var names  : X
+;;   Predicate  : high-risk
+;;   → Derives [:system :high-risk true] given :unpatched and :outdated-config facts.
+;;
+;; Q7: What should be fixed first?
+;;   Query EDN  : [{:op :fix-first :args ["X"]}]
+;;   Var names  : X
+;;   Predicate  : fix-first
+;;
+;; ── Notes ──────────────────────────────────────────────────────────────────
+;; - The domain's Datalog rules are automatically included when you run
+;;   inference — no extra-rules needed.
+;; - Variable names must match the case used in the query (e.g. "X" not "x").
+;; - Predicate field: leave blank to infer from the query op (e.g. :can-fly).
+;; ───────────────────────────────────────────────────────────────────────────
+
+{:current-domain :animals
+ :selection {:kind :rules}
+ :theme :light
+ :expanded #{}
+ :domains
+
+ {;; =====================================================================
+  ;; ANIMALS
+  ;; =====================================================================
+  :animals
+  {:id :animals
+   :label "Animals"
+   :imports []
+   :rules
+   [;; Base: birds are warm-blooded
+    [(warm-blooded ?x) [?x :isa :bird]]
+    [(warm-blooded ?x) [?x :isa :mammal]]
+
+    ;; Base: birds fly — except penguins (NAF exception)
+    [(can-fly ?x) [?x :isa :bird] (not (penguin ?x))]
+
+    ;; Penguins are the non-flying birds
+    [(penguin ?x) [?x :isa :bird] [?x :type :penguin]]
+
+    ;; What birds eat depends on size
+    [(eats ?x :fish)    [?x :isa :bird] [?x :size :large]]
+    [(eats ?x :insects) [?x :isa :bird] [?x :size :small]]
+    [(eats ?x :seeds)   [?x :isa :bird] [?x :diet :omnivore]]
+
+    ;; Carnivores eat their prey
+    [(eats ?x ?prey) [?x :preys-on ?prey]]]
+   :events
+   [;; Entity declarations (isa)
+    {:op :assert :source "seed" :triple [:sparrow :isa :bird]}
+    {:op :assert :source "seed" :triple [:robin   :isa :bird]}
+    {:op :assert :source "seed" :triple [:eagle   :isa :bird]}
+    {:op :assert :source "seed" :triple [:tweety  :isa :bird]}
+    {:op :assert :source "seed" :triple [:rex     :isa :mammal]}
+    {:op :assert :source "seed" :triple [:nemo    :isa :fish]}
+    ;; tweety is a penguin
+    {:op :assert :source "seed" :triple [:tweety  :type :penguin]}
+    ;; sizes
+    {:op :assert :source "seed" :triple [:sparrow :size :small]}
+    {:op :assert :source "seed" :triple [:robin   :size :small]}
+    {:op :assert :source "seed" :triple [:eagle   :size :large]}
+    {:op :assert :source "seed" :triple [:tweety  :size :small]}
+    ;; diets
+    {:op :assert :source "seed" :triple [:robin   :diet :omnivore]}
+    {:op :assert :source "seed" :triple [:sparrow :diet :omnivore]}
+    ;; eagle preys on rabbits and fish
+    {:op :assert :source "seed" :triple [:eagle   :preys-on :rabbit]}
+    {:op :assert :source "seed" :triple [:eagle   :preys-on :fish]}]
+   :schema
+   {:types
+    [{:name "animal"     :constructors ["sparrow" "robin" "eagle" "tweety" "rex" "nemo"]}
+     {:name "animal-class" :constructors ["bird" "mammal" "fish" "reptile"]}
+     {:name "size"       :constructors ["small" "medium" "large"]}
+     {:name "diet-type"  :constructors ["omnivore" "carnivore" "herbivore"]}]
+    :predicates
+    [{:name "isa"      :argTypes ["animal" "animal-class"]}
+     {:name "type"     :argTypes ["animal" "atom"]}
+     {:name "size"     :argTypes ["animal" "size"]}
+     {:name "diet"     :argTypes ["animal" "diet-type"]}
+     {:name "preys-on" :argTypes ["animal" "atom"]}]
+    :queries
+    [{:name "all birds"         :text "[?x :isa :bird]"}
+     {:name "large birds"       :text "[?x :isa :bird] [?x :size :large]"}
+     {:name "flyers (derived)"  :text "[?x :can-fly true]"}
+     {:name "warm-blooded (derived)" :text "[?x :warm-blooded true]"}
+     {:name "eats (derived)"    :text "[?x :eats ?y]"}]}}
+
+  ;; =====================================================================
+  ;; TRUST
+  ;; =====================================================================
+  :trust
+  {:id :trust
+   :label "Trust Network"
+   :imports []
+   :rules
+   [;; Transitive trust: direct edge, or chain through an intermediary
+    [(trusts ?x ?z) [?x :directly-trusts ?z]]
+    [(trusts ?x ?z) [?x :directly-trusts ?y] (trusts ?y ?z)]
+
+    ;; Delegate: X can act on behalf of Y if X is trusted by Y and has admin role
+    [(can-delegate ?x ?y) (trusts ?y ?x) [?x :role :admin]]]
+   :events
+   [;; Roles
+    {:op :assert :source "seed" :triple [:alice :role :admin]}
+    {:op :assert :source "seed" :triple [:bob   :role :user]}
+    {:op :assert :source "seed" :triple [:carol :role :user]}
+    {:op :assert :source "seed" :triple [:dave  :role :admin]}
+    {:op :assert :source "seed" :triple [:eve   :role :user]}
+    {:op :assert :source "seed" :triple [:frank :role :user]}
+    ;; Direct trust edges (acyclic — alice is the root of trust)
+    {:op :assert :source "seed" :triple [:alice :directly-trusts :bob]}
+    {:op :assert :source "seed" :triple [:alice :directly-trusts :dave]}
+    {:op :assert :source "seed" :triple [:bob   :directly-trusts :carol]}
+    {:op :assert :source "seed" :triple [:dave  :directly-trusts :eve]}
+    {:op :assert :source "seed" :triple [:carol :directly-trusts :frank]}]
+   :schema
+   {:types
+    [{:name "agent" :constructors ["alice" "bob" "carol" "dave" "eve" "frank"]}
+     {:name "role"  :constructors ["admin" "user" "guest"]}]
+    :predicates
+    [{:name "role"             :argTypes ["agent" "role"]}
+     {:name "directly-trusts" :argTypes ["agent" "agent"]}]
+    :queries
+    [{:name "all admins"                   :text "[?x :role :admin]"}
+     {:name "alice's direct trust"         :text "[?alice :directly-trusts ?x]"}
+     {:name "transitive trust (derived)"   :text "[?x :trusts ?y]"}
+     {:name "can delegate (derived)"       :text "[?x :can-delegate ?y]"}]}}
+
+  ;; =====================================================================
+  ;; RISK
+  ;; =====================================================================
+  :risk
+  {:id :risk
+   :label "Risk Analysis"
+   :imports []
+   :rules
+   [;; A breach occurs if there's a vulnerability AND it's exploited
+    [(breach :system) (vuln :system) (exploited :system)]
+
+    ;; Exploitation happens if the system is misconfigured or there's an insider
+    [(exploited :system) [:system :misconfigured :yes]]
+    [(exploited :system) [:system :insider-threat :yes]]
+
+    ;; Vulnerability exists if patch is missing or config is outdated
+    [(vuln :system) [:system :unpatched :yes]]
+    [(vuln :system) [:system :outdated-config :yes]]
+
+    ;; High risk: a breach is derivable
+    [(high-risk :system) (breach :system)]
+
+    ;; Remediation priority: fix unpatched first; outdated-config otherwise
+    [(fix-first ?x) [?x :unpatched :yes]]
+    [(fix-first ?x) [?x :outdated-config :yes] (not [:system :unpatched :yes])]]
+   :events
+   [;; Current observed state of the system
+    {:op :assert :source "seed" :triple [:system :unpatched :yes]}
+    {:op :assert :source "seed" :triple [:system :outdated-config :yes]}
+    {:op :assert :source "seed" :triple [:system :misconfigured :yes]}
+    {:op :assert :source "seed" :triple [:server-a :host-of :system]}
+    {:op :assert :source "seed" :triple [:server-a :os-version "ubuntu-22.04"]}
+    {:op :assert :source "seed" :triple [:server-a :last-patched "2024-01"]}]
+   :schema
+   {:types
+    [{:name "component" :constructors ["system" "server-a" "db" "api-gateway"]}]
+    :predicates
+    [{:name "unpatched"       :argTypes ["component" "atom"]}
+     {:name "outdated-config" :argTypes ["component" "atom"]}
+     {:name "misconfigured"   :argTypes ["component" "atom"]}
+     {:name "insider-threat"  :argTypes ["component" "atom"]}
+     {:name "host-of"         :argTypes ["component" "component"]}
+     {:name "os-version"      :argTypes ["component" "string"]}
+     {:name "last-patched"    :argTypes ["component" "string"]}]
+    :queries
+    [{:name "unpatched systems"    :text "[?x :unpatched true]"}
+     {:name "high risk (derived)"  :text "[?x :high-risk true]"}
+     {:name "fix first (derived)"  :text "[?x :fix-first true]"}]}}}}
