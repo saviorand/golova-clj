@@ -98,11 +98,8 @@
     [(warm-blooded ?x) [?x :isa :bird]]
     [(warm-blooded ?x) [?x :isa :mammal]]
 
-    ;; Base: birds fly — except penguins (NAF exception)
-    [(can-fly ?x) [?x :isa :bird] (not (penguin ?x))]
-
-    ;; Penguins are the non-flying birds
-    [(penguin ?x) [?x :isa :bird] [?x :type :penguin]]
+    ;; Base: birds fly — except penguins (NAF on triple pattern)
+    [(can-fly ?x) [?x :isa :bird] (not [?x :type :penguin])]
 
     ;; What birds eat depends on size
     [(eats ?x :fish)    [?x :isa :bird] [?x :size :large]]
@@ -237,6 +234,6 @@
      {:name "os-version"      :argTypes ["component" "string"]}
      {:name "last-patched"    :argTypes ["component" "string"]}]
     :queries
-    [{:name "unpatched systems"    :text "[?x :unpatched true]"}
+    [{:name "unpatched systems"    :text "[?x :unpatched :yes]"}
      {:name "high risk (derived)"  :text "[?x :high-risk true]"}
      {:name "fix first (derived)"  :text "[?x :fix-first true]"}]}}}}

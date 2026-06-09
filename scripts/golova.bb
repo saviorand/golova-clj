@@ -17,7 +17,7 @@
 ;;   POST /transact          → body EDN: {:op :assert/:retract :triple [e a v]}
 
 (require '[babashka.pods :as pods])
-(pods/load-pod 'replikativ/datahike "CURRENT")
+(pods/load-pod 'replikativ/datahike "0.8.1691")
 (require '[datahike.pod :as d])
 
 (require '[babashka.cli   :as cli]
@@ -152,8 +152,12 @@
 ;; Rebuild — replay snapshot into a fresh Datahike file DB
 ;; ============================================================================
 
+(def ^:private db-store-id
+  ;; Fixed UUID — same logical store across restarts; deleted & recreated on rebuild.
+  #uuid "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+
 (defn- db-config [db-path]
-  {:store              {:backend :file :path db-path}
+  {:store              {:backend :file :path db-path :id db-store-id}
    :keep-history?      false
    :schema-flexibility :write})
 
@@ -246,21 +250,26 @@
 ;; Pull helper — resolve ref values back to idents
 ;; ============================================================================
 
+(defn- resolve-ref
+  "Resolve a single pull ref value: {:db/id N} → ident or id."
+  [id->ident v]
+  (if (map? v) (get id->ident (:db/id v) (:db/id v)) v))
+
 (defn- resolve-pull-vals
-  "Replace {:db/id N} ref maps with the ident keyword, if known."
+  "Replace {:db/id N} ref maps in a pull result with ident keywords."
   [id->ident m]
-  (into {} (for [[k v] m
-                 :when (not= k :db/id)]
+  (into {} (for [[k v] m :when (not= k :db/id)]
              [k (cond
-                  (map? v)    (get id->ident (:db/id v) v)
-                  (set? v)    (set (map #(if (map? %) (get id->ident (:db/id %) %) %) v))
-                  (vector? v) (mapv #(if (map? %) (get id->ident (:db/id %) %) %) v)
+                  (map? v)    (resolve-ref id->ident v)
+                  ;; pull returns vectors for cardinality-many in 0.8.x
+                  (vector? v) (mapv #(resolve-ref id->ident %) v)
+                  (set? v)    (set  (map  #(resolve-ref id->ident %) v))
                   :else       v)])))
 
 (defn pull-entity [conn ident-kw]
-  (let [db      (d/db conn)
-        result  (d/pull db '[*] [:db/ident ident-kw])
-        id->i   (eid->ident-map db)]
+  (let [db     (d/db conn)
+        result (d/pull db '[*] [:db/ident ident-kw])
+        id->i  (eid->ident-map db)]
     (resolve-pull-vals id->i result)))
 
 ;; ============================================================================
